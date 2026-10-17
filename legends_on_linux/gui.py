@@ -342,12 +342,13 @@ class MainWindow(QMainWindow):
         version = game_version(directory) if installed else None
         self.subtitle.setText(f"{C.PRETTY} {C.VERSION}"
                               + (f"  ·  game {version}" if version else ""))
+        # The header shows the game's own logo from the user's install; the
+        # launcher's icon stands in until the game is there.
         logo = directory / "icons" / "MCSquare71x71Logo.scale-400.png"
-        if logo.is_file():
-            pixmap = QPixmap(str(logo))
+        pixmap = QPixmap(str(logo)) if logo.is_file() else app_icon().pixmap(72, 72)
+        if not pixmap.isNull():
             self.logo.setPixmap(pixmap.scaled(72, 72, Qt.KeepAspectRatio,
                                               Qt.SmoothTransformation))
-            self.setWindowIcon(QIcon(pixmap))
 
         linked = store.signed_in()
         self.store_row.set_status("Linked" if linked else "Not linked", linked)
@@ -606,6 +607,15 @@ def build_xgameruntime():
         raise LolError("Building the engine patch failed; see the log.")
 
 
+def app_icon():
+    icon = QIcon()
+    for size in (16, 32, 48, 64, 128, 256, 512):
+        path = C.ASSETS / "icons" / "hicolor" / f"{size}x{size}" / "apps" / f"{C.APP_ID}.png"
+        if path.is_file():
+            icon.addFile(str(path))
+    return icon if not icon.isNull() else QIcon.fromTheme(C.APP_ID)
+
+
 def game_version(directory: Path):
     try:
         text = (directory / "appxmanifest.xml").read_text(encoding="utf-8", errors="replace")
@@ -640,7 +650,11 @@ def _accepts_arg(fn):
 def main():
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(C.PRETTY)
-    app.setDesktopFileName(C.APP)
+    # Wayland compositors match the window to its .desktop file (and icon) by this.
+    app.setDesktopFileName(C.APP_ID)
+    icon = app_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
     app.setStyleSheet(STYLE)
     window = MainWindow()
     window.show()

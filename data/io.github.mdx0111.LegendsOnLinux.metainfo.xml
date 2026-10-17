@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.mdx0111.LegendsOnLinux</id>
+  <name>LegendsOnLinux</name>
+  <summary>Play Minecraft Legends (Windows edition) on Linux</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.mdx0111">
+    <name>Masoud</name>
+  </developer>
+  <description>
+    <p>
+      LegendsOnLinux downloads Minecraft Legends from Microsoft for an account
+      that owns the Windows edition, and runs it with a patched WineGDK engine.
+      It signs the game in to Xbox Live and keeps its saves on this computer.
+    </p>
+    <p>
+      You need to own Minecraft Legends for Windows. The launcher does not
+      distribute any game files. It is not affiliated with Microsoft or Mojang.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.mdx0111.LegendsOnLinux.desktop</launchable>
+  <url type="homepage">https://github.com/mdx0111/LegendsOnLinux</url>
+  <url type="bugtracker">https://github.com/mdx0111/LegendsOnLinux/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>The launcher window</caption>
+      <image>https://raw.githubusercontent.com/mdx0111/LegendsOnLinux/main/docs/images/launcher.png</image>
+    </screenshot>
+  </screenshots>
+  <categories>
+    <category>Game</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-17">
+      <description>
+        <p>First version: command-line launcher and launcher window.</p>
+      </description>
+    </release>
+  </releases>
+</component>

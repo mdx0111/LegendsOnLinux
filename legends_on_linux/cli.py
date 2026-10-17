@@ -71,32 +71,35 @@ def cmd_gui(args):
 
 
 def cmd_desktop_entry(args):
-    """Add the launcher to the desktop's application menu."""
+    """Add a checkout's launcher to the desktop's application menu.
+
+    Distribution packages install their own desktop file and icons.
+    """
     data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
-    entry = data / "applications" / f"{C.APP}.desktop"
+    entry = data / "applications" / f"{C.APP_ID}.desktop"
+    icons = sorted((C.ASSETS / "icons" / "hicolor").glob(f"*/apps/{C.APP_ID}.png"))
+    # The entry an earlier version created, under the old name.
+    (data / "applications" / f"{C.APP}.desktop").unlink(missing_ok=True)
+    (data / "icons" / f"{C.APP}.png").unlink(missing_ok=True)
     if args.remove:
         entry.unlink(missing_ok=True)
-        (data / "icons" / f"{C.APP}.png").unlink(missing_ok=True)
+        for icon in icons:
+            (data / "icons" / "hicolor" / icon.relative_to(C.ASSETS / "icons" / "hicolor")
+             ).unlink(missing_ok=True)
         ok("Removed the launcher from the application menu")
         return
     script = Path(sys.argv[0]).resolve()
     command = (f'"{script}"' if script.name == "legends-on-linux" and script.is_file()
                else f'"{sys.executable}" -m legends_on_linux')
-    icon = "applications-games"
-    logo = launch.game_dir() / "icons" / "MCSquare71x71Logo.scale-400.png"
-    if logo.is_file():
-        target = data / "icons" / f"{C.APP}.png"
+    for icon in icons:
+        target = data / "icons" / "hicolor" / icon.relative_to(C.ASSETS / "icons" / "hicolor")
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(logo, target)
-        icon = str(target)
+        shutil.copy2(icon, target)
+    template = (C.ASSETS / f"{C.APP_ID}.desktop").read_text(encoding="utf-8")
     entry.parent.mkdir(parents=True, exist_ok=True)
-    entry.write_text("\n".join([
-        "[Desktop Entry]", "Type=Application", "Name=Minecraft Legends",
-        "GenericName=Game launcher",
-        "Comment=Play Minecraft Legends (Windows edition) with LegendsOnLinux",
-        f"Exec={command} gui", f"Icon={icon}", "Terminal=false",
-        "Categories=Game;", "Keywords=minecraft;legends;", ""]), encoding="utf-8")
-    ok(f"Added Minecraft Legends to the application menu ({entry})")
+    entry.write_text(template.replace("Exec=legends-on-linux gui", f"Exec={command} gui"),
+                     encoding="utf-8")
+    ok(f"Added LegendsOnLinux to the application menu ({entry})")
 
 
 def cmd_status(args):

@@ -5,8 +5,13 @@ import os
 from pathlib import Path
 
 APP = "legends-on-linux"
+APP_ID = "io.github.mdx0111.LegendsOnLinux"
 PRETTY = "LegendsOnLinux"
 VERSION = "0.1.0"
+
+# Desktop file, metainfo and icons. Checkouts and distribution packages both
+# keep data/ beside the legends_on_linux package.
+ASSETS = Path(__file__).resolve().parent.parent / "data"
 
 HOME = Path.home()
 DATA = Path(

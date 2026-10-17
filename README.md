@@ -52,7 +52,20 @@ On Debian/Ubuntu: `sudo apt install python3-cryptography python3-pyside6.qtwidge
 
 ## Getting started
 
-### Launcher window
+### Fedora (.rpm)
+
+Build the package and install it (it pulls in its dependencies):
+
+```sh
+git clone https://github.com/mdx0111/LegendsOnLinux.git
+cd LegendsOnLinux
+scripts/build-rpm.sh                  # needs: sudo dnf install rpm-build
+sudo dnf install ./dist/legends-on-linux-*.noarch.rpm
+```
+
+Then start **LegendsOnLinux** from the application menu, or run `legends-on-linux`.
+
+### Launcher window (from a checkout)
 
 ```sh
 git clone https://github.com/mdx0111/LegendsOnLinux.git

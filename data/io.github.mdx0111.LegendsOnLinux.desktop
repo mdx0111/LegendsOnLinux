@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=LegendsOnLinux
+GenericName=Minecraft Legends launcher
+Comment=Download and play Minecraft Legends (Windows edition) on Linux
+Exec=legends-on-linux gui
+Icon=io.github.mdx0111.LegendsOnLinux
+Terminal=false
+Categories=Game;
+Keywords=minecraft;legends;launcher;wine;
+StartupWMClass=io.github.mdx0111.LegendsOnLinux

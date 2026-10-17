@@ -34,3 +34,11 @@ linked into or copied into this project.
 https://github.com/Open-Wine-Components/umu-launcher
 
 Downloaded and run as a separate program (pinned by SHA-256).
+
+## Application icon
+`data/icons/` (all sizes, scaled with nearest-neighbour from the 512×512
+original) is the Minecraft Legends icon
+[#49024 on SteamGridDB](https://www.steamgriddb.com/icon/49024), uploaded by
+TheWaslijn. SteamGridDB lists it as "official" style: it is based on Mojang's
+artwork for the game. Minecraft and Minecraft Legends are trademarks of
+Microsoft/Mojang; the icon is not covered by this project's MIT licence.
