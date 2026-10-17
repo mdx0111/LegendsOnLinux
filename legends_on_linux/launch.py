@@ -3,6 +3,8 @@
 
 import os
 import shutil
+import signal
+import subprocess
 from pathlib import Path
 
 from . import auth, deps, prefix, store
@@ -97,7 +99,41 @@ def build(offline=False, debug=False):
 
 
 def play(offline=False, debug=False):
+    """Start the game in place of this process (the CLI)."""
     cmd, environment, directory = build(offline=offline, debug=debug)
     ok("Starting Minecraft Legends …")
     os.chdir(directory)
     os.execvpe(cmd[0], cmd, environment)
+
+
+def start(offline=False, debug=False):
+    """Start the game as a child process (the GUI); returns the Popen.
+
+    Its output goes to logs/game.log. The process is the head of a session of
+    its own, so stop() can take the whole tree down with it.
+    """
+    cmd, environment, directory = build(offline=offline, debug=debug)
+    C.LOGS.mkdir(parents=True, exist_ok=True)
+    log = open(C.LOGS / "game.log", "wb")
+    try:
+        proc = subprocess.Popen(cmd, env=environment, cwd=directory, stdin=subprocess.DEVNULL,
+                                stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    finally:
+        log.close()
+    ok("Starting Minecraft Legends …")
+    return proc
+
+
+def running():
+    """Whether anything is running in the game's Wine prefix."""
+    return bool(prefix.prefix_processes())
+
+
+def stop(proc=None, grace=10):
+    """Ask the game to quit, then make sure everything in the prefix is gone."""
+    if proc and proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except OSError:
+            pass
+    prefix.stop_wineserver(grace)

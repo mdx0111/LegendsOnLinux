@@ -40,18 +40,32 @@ All downloaded components are pinned by SHA-256 in
 ## Requirements
 
 - x86-64 Linux with a Vulkan GPU driver
-- Python ≥ 3.10 with `cryptography`
+- Python ≥ 3.10 with `cryptography`, and `PySide6` for the launcher window
 - `libwebkit2gtk-4.1` (for the Microsoft Store sign-in window)
 - To build the engine patch: `git gcc make flex bison` and `x86_64-w64-mingw32-gcc`.
-  On Fedora: `sudo dnf install git gcc make flex bison mingw64-gcc python3-cryptography webkit2gtk4.1`
+  On Fedora: `sudo dnf install git gcc make flex bison mingw64-gcc python3-cryptography python3-pyside6 webkit2gtk4.1`
 - About 13 GB of disk space for the game, plus about 3 GB for the engine and runtime
 
 ## Getting started
 
+### Launcher window
+
 ```sh
 git clone https://github.com/mdx0111/LegendsOnLinux.git
 cd LegendsOnLinux
+./legends-on-linux                    # opens the launcher
+./legends-on-linux desktop-entry      # optional: add it to your application menu
+```
 
+In the window, sign in to the **Microsoft Store** and **Xbox Live**, press
+**Install** (or **Change…** to pick a folder you already downloaded the game
+into), then **PLAY**. The first play sets up the engine and Wine prefix, and
+builds the engine patch if it is missing (see Requirements). The ⋮ menu opens
+the game, saves and log folders, and turns on debug logging.
+
+### Command line
+
+```sh
 ./legends-on-linux setup              # engine, umu, xodus-cli, Wine prefix
 scripts/build-xgameruntime.sh         # build the Legends xgameruntime.dll (~1 min)
 ./legends-on-linux setup              # install it into the engine

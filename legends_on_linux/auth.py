@@ -65,8 +65,11 @@ def _save_token(refresh_token):
         {"refresh_token": refresh_token, "obtained": int(time.time())}).encode())
 
 
-def login(on_code=None):
-    """Device-code sign-in: the user opens a URL and types a short code."""
+def login(on_code=None, cancel=None):
+    """Device-code sign-in: the user opens a URL and types a short code.
+
+    ``cancel`` is an optional threading.Event that stops the wait.
+    """
     started = http_post_form(C.MSA_CONNECT, {
         "client_id": C.MSA_CLIENT_ID, "scope": C.MSA_SCOPE,
         "response_type": "device_code"})
@@ -82,7 +85,11 @@ def login(on_code=None):
     interval = max(int(started.get("interval") or 5), 1)
     deadline = time.time() + int(started.get("expires_in") or 900)
     while time.time() < deadline:
-        time.sleep(interval)
+        if cancel is not None:
+            if cancel.wait(interval):
+                raise LolError("The Xbox Live sign-in was cancelled.")
+        else:
+            time.sleep(interval)
         answer = http_post_form(C.MSA_TOKEN, {
             "client_id": C.MSA_CLIENT_ID, "grant_type": "device_code",
             "device_code": started["device_code"]})
@@ -349,6 +356,15 @@ def preauth(force=False):
     if not playfab.get("Token"):
         warn("Xbox Live: no PlayFab token; the game will try to get one itself.")
     return wine_path(C.PREAUTH)
+
+
+def gamertag():
+    """The gamertag of the last successful Xbox Live sign-in, if known."""
+    try:
+        cached = json.loads(C.PREAUTH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return cached.get("xbl_gamertag") or None
 
 
 def current_refresh_token():

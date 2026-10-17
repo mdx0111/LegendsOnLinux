@@ -11,16 +11,21 @@ The wrapper and the keyring handling follow BedrockOnLinux's bol/xodus.py (MIT).
 """
 # SPDX-License-Identifier: MIT
 
+import fcntl
 import json
 import os
+import pty
 import re
+import signal
+import struct
 import subprocess
 import sys
+import termios
 from pathlib import Path
 
 from . import config as C
 from .deps import ensure_xodus
-from .util import LolError, info, ok, warn
+from .util import LolError, info, ok, progress, progress_done, warn
 
 KEYRING = C.XODUS_HOME / ".xodus-keyring.ron"
 # `xodus-cli login` stores the account under these two entries; a keyring
@@ -63,11 +68,14 @@ def login():
     info("The first sign-in registers this PC as a Microsoft Store device; your "
          "system may ask for a password so xodus-cli can read the firmware's "
          "system information. Cancelling that prompt is fine.")
-    code = subprocess.run([str(binary), "login"], env=env(), stdin=subprocess.DEVNULL).returncode
+    code, tail = _run([str(binary), "login"])
+    if _cancelled:
+        raise LolError("The Microsoft Store sign-in was cancelled.")
     if code == 0 and signed_in():
         ok("Microsoft Store account linked")
         return True
-    raise LolError(f"The Microsoft Store sign-in did not complete (exit {code}).")
+    raise LolError(f"The Microsoft Store sign-in did not complete (exit {code})."
+                   + (f" {tail[-1]}" if tail else ""))
 
 
 def logout(device=False):
@@ -114,15 +122,10 @@ def install(game_dir: Path):
     _require_sign_in()
     game_dir.mkdir(parents=True, exist_ok=True)
     info(f"Downloading Minecraft Legends into {game_dir} (about 12 GB on first install) …")
-    proc = subprocess.Popen([str(binary), "streaming", C.PRODUCT_ID, str(game_dir)],
-                            env=env(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            stdin=subprocess.DEVNULL, text=True, errors="replace")
-    tail = []
-    for line in proc.stdout:
-        sys.stderr.write(line)
-        tail.append(_ANSI.sub("", line.rstrip()))
-        del tail[:-60]
-    code = proc.wait()
+    code, tail = _run([str(binary), "streaming", C.PRODUCT_ID, str(game_dir)], bars=True)
+    progress_done()
+    if _cancelled:
+        raise LolError("The download was cancelled; running it again resumes it.")
     output = "\n".join(tail)
     problem = _explain(output)
     if problem:
@@ -131,6 +134,114 @@ def install(game_dir: Path):
         raise LolError(f"The download did not complete (exit {code}). "
                        + (tail[-1] if tail else ""))
     ok("Minecraft Legends is installed")
+
+
+# ---------------------------------------------------------------- xodus-cli runs
+
+# indicatif renders "Downloading   1.20 GiB/ 11.70 GiB [###   ] 10%"; only
+# the aggregate bars (label exactly "Initializing"/"Downloading") count, not
+# the per-file ones. Patterns follow BedrockOnLinux's bol/xodus.py.
+_PROGRESS = re.compile(r"^\s*(?P<msg>\S[^\d]*?)\s+(?P<done>[\d.]+)\s*(?P<du>[KMGT]?i?B)\s*/\s*"
+                       r"(?P<total>[\d.]+)\s*(?P<tu>[KMGT]?i?B)")
+_TOTAL_BAR = re.compile(r"^(initializing|downloading)\s*$", re.I)
+_BAR_FRAME = re.compile(r"\S.{0,29}?\s{2,}[\d.]+\s*[KMGT]?i?B\s*/\s*[\d.]+\s*[KMGT]?i?B"
+                        r"[^\[\]]*\[[^\]]*\]\s*\d+\s*%")
+_BAR_REMNANT = re.compile(r"[\d.]+\s*[KMGT]?i?B\s*/\s*[\d.]+\s*[KMGT]?i?B")
+_UNITS = {"B": 1, "KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30, "TiB": 1 << 40,
+          "KB": 1000, "MB": 1000 ** 2, "GB": 1000 ** 3}
+
+_current = None
+_cancelled = False
+
+
+def cancel():
+    """Stop the sign-in or download that is running, if any."""
+    global _cancelled
+    proc = _current
+    if proc and proc.poll() is None:
+        _cancelled = True
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+
+def _bytes(value, unit):
+    try:
+        return int(float(value) * _UNITS.get(unit, 1))
+    except ValueError:
+        return 0
+
+
+def _line(line, tail, bars):
+    """Handle one line of output: progress, or a message worth keeping."""
+    line = _ANSI.sub("", line).replace("\x00", "").rstrip()
+    if not line:
+        return
+    match = _PROGRESS.match(line)
+    if bars and match and _TOTAL_BAR.match(match.group("msg").strip()):
+        total = _bytes(match.group("total"), match.group("tu"))
+        if total:
+            progress("Downloading Minecraft Legends",
+                     min(_bytes(match.group("done"), match.group("du")), total), total)
+    if bars:
+        line = _BAR_FRAME.sub(" ", line).strip()
+        if not line or _BAR_REMNANT.search(line):
+            return
+    tail.append(line[:1000])
+    del tail[:-60]
+    info(f"xodus: {line[:300]}")
+
+
+def _run(cmd, bars=False):
+    """Run xodus-cli, logging its output; returns (exit code, last lines).
+
+    With ``bars`` the child gets a pty: indicatif draws nothing otherwise.
+    """
+    global _current, _cancelled
+    _cancelled = False
+    environment = env()
+    if bars and (environment.get("TERM") or "dumb") in ("", "dumb", "unknown"):
+        environment["TERM"] = "xterm-256color"
+    tail = []
+    if bars:
+        master, slave = pty.openpty()
+        try:
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 160, 0, 0))
+        except OSError:
+            pass
+        proc = subprocess.Popen(cmd, env=environment, stdin=slave, stdout=slave, stderr=slave,
+                                start_new_session=True)
+        os.close(slave)
+        _current = proc
+        buffer = ""
+        try:
+            while True:
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buffer += chunk.decode("utf-8", "replace")
+                parts = re.split(r"[\r\n]", buffer)
+                buffer = parts.pop()
+                for part in parts:
+                    _line(part, tail, True)
+        finally:
+            os.close(master)
+            proc.wait()
+        _line(buffer, tail, True)
+    else:
+        proc = subprocess.Popen(cmd, env=environment, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, errors="replace", start_new_session=True)
+        _current = proc
+        for raw in proc.stdout:
+            _line(raw, tail, False)
+        proc.wait()
+    _current = None
+    return proc.returncode, tail
 
 
 def installed(game_dir: Path):

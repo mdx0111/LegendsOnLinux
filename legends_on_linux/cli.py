@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 
 import argparse
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -58,6 +60,45 @@ def cmd_play(args):
     launch.play(offline=args.offline, debug=args.debug)
 
 
+def cmd_gui(args):
+    try:
+        from . import gui
+    except ImportError as exc:
+        raise LolError(f"The launcher window needs PySide6 ({exc}). Install it "
+                       "(Fedora: sudo dnf install python3-pyside6; elsewhere: "
+                       "pip install PySide6), or use the commands in --help.") from exc
+    sys.exit(gui.main())
+
+
+def cmd_desktop_entry(args):
+    """Add the launcher to the desktop's application menu."""
+    data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    entry = data / "applications" / f"{C.APP}.desktop"
+    if args.remove:
+        entry.unlink(missing_ok=True)
+        (data / "icons" / f"{C.APP}.png").unlink(missing_ok=True)
+        ok("Removed the launcher from the application menu")
+        return
+    script = Path(sys.argv[0]).resolve()
+    command = (f'"{script}"' if script.name == "legends-on-linux" and script.is_file()
+               else f'"{sys.executable}" -m legends_on_linux')
+    icon = "applications-games"
+    logo = launch.game_dir() / "icons" / "MCSquare71x71Logo.scale-400.png"
+    if logo.is_file():
+        target = data / "icons" / f"{C.APP}.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(logo, target)
+        icon = str(target)
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_text("\n".join([
+        "[Desktop Entry]", "Type=Application", "Name=Minecraft Legends",
+        "GenericName=Game launcher",
+        "Comment=Play Minecraft Legends (Windows edition) with LegendsOnLinux",
+        f"Exec={command} gui", f"Icon={icon}", "Terminal=false",
+        "Categories=Game;", "Keywords=minecraft;legends;", ""]), encoding="utf-8")
+    ok(f"Added Minecraft Legends to the application menu ({entry})")
+
+
 def cmd_status(args):
     directory = launch.game_dir()
 
@@ -91,7 +132,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="legends-on-linux",
         description="Download and play Minecraft Legends (Windows edition) on Linux.")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("gui", help="open the launcher window (the default)").set_defaults(func=cmd_gui)
 
     sub.add_parser("setup", help="download the engine and tools, create the Wine prefix"
                    ).set_defaults(func=cmd_setup)
@@ -123,7 +166,13 @@ def main(argv=None):
 
     sub.add_parser("status", help="show what is set up").set_defaults(func=cmd_status)
 
+    p = sub.add_parser("desktop-entry", help="add the launcher to the application menu")
+    p.add_argument("--remove", action="store_true", help="remove it again")
+    p.set_defaults(func=cmd_desktop_entry)
+
     args = parser.parse_args(argv)
+    if args.command is None:
+        args.func = cmd_gui
     try:
         args.func(args)
     except LolError as exc:

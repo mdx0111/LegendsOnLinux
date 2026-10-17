@@ -28,16 +28,59 @@ def colour(code, text, stream=sys.stderr):
     return f"\033[{code}m{text}\033[0m" if stream.isatty() else text
 
 
+# A front end (the GUI) can take the messages instead of stderr:
+# set_log_sink(fn) with fn(level, message), level being "info", "ok" or "warn".
+_log_sink = None
+_MARKS = {"info": (36, "::"), "ok": (32, "✓ "), "warn": (33, "! ")}
+
+
+def set_log_sink(sink):
+    global _log_sink
+    _log_sink = sink
+
+
+# progress(label, done, total) for long operations; total 0 means unknown.
+# Without a sink, progress is drawn on the terminal.
+_progress_sink = None
+
+
+def set_progress_sink(sink):
+    global _progress_sink
+    _progress_sink = sink
+
+
+def progress(label, done, total):
+    if _progress_sink:
+        _progress_sink(label, done, total)
+    elif sys.stderr.isatty():
+        pct = f"{done * 100 // total:3d}%" if total else ""
+        print(f"\r   {label}: {done >> 20} / {total >> 20} MiB {pct}   ",
+              end="", file=sys.stderr, flush=True)
+
+
+def progress_done():
+    if not _progress_sink and sys.stderr.isatty():
+        print(file=sys.stderr)
+
+
+def _log(level, msg):
+    if _log_sink:
+        _log_sink(level, str(msg))
+        return
+    code, mark = _MARKS[level]
+    print(f"{colour(code, mark)} {msg}", file=sys.stderr, flush=True)
+
+
 def info(msg):
-    print(f"{colour(36, '::')} {msg}", file=sys.stderr, flush=True)
+    _log("info", msg)
 
 
 def ok(msg):
-    print(f"{colour(32, '✓')}  {msg}", file=sys.stderr, flush=True)
+    _log("ok", msg)
 
 
 def warn(msg):
-    print(f"{colour(33, '!')}  {msg}", file=sys.stderr, flush=True)
+    _log("warn", msg)
 
 
 # ---------------------------------------------------------------- settings
@@ -134,13 +177,10 @@ def download(url, dest: Path, label, sha256=None):
                     out.write(block)
                     done += len(block)
                     now = time.monotonic()
-                    if sys.stderr.isatty() and now - last > 0.2:
+                    if now - last > 0.2:
                         last = now
-                        pct = f"{done * 100 // total:3d}%" if total else ""
-                        print(f"\r   {label}: {done >> 20} / {total >> 20} MiB {pct}",
-                              end="", file=sys.stderr, flush=True)
-            if sys.stderr.isatty():
-                print(file=sys.stderr)
+                        progress(label, done, total)
+            progress_done()
     if sha256:
         actual = sha256_file(part)
         if actual != sha256:

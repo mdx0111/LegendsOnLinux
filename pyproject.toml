@@ -12,6 +12,9 @@ license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = ["cryptography>=41"]
 
+[project.optional-dependencies]
+gui = ["PySide6>=6.5"]
+
 [project.scripts]
 legends-on-linux = "legends_on_linux.cli:main"
 
