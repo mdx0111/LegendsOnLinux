@@ -5,6 +5,9 @@
 #
 #   scripts/build-rpm.sh            # from the working tree (tracked + new files)
 #   scripts/build-rpm.sh --head     # from the last commit only
+#   scripts/build-rpm.sh --head --srpm   # source rpm only (what COPR asks for)
+#
+# OUTDIR overrides where the packages go (default: dist/).
 #
 # Needs: rpmbuild (Fedora: sudo dnf install rpm-build).
 # The source rpm is what Fedora COPR builds from.
@@ -15,8 +18,17 @@ name=legends-on-linux
 app_id=io.github.mdx0111.LegendsOnLinux
 version=$(grep -m1 '^VERSION = ' "$src/legends_on_linux/config.py" | cut -d'"' -f2)
 release=${RPM_RELEASE:-1}
-out=$src/dist
+out=${OUTDIR:-$src/dist}
 top=$out/rpmbuild
+from_head=false
+srpm_only=false
+for arg in "$@"; do
+    case $arg in
+        --head) from_head=true ;;
+        --srpm) srpm_only=true ;;
+        *) echo "unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
 
 command -v rpmbuild >/dev/null || { echo "rpmbuild missing (sudo dnf install rpm-build)" >&2; exit 1; }
 [[ "$version" =~ ^[0-9]+(\.[0-9]+)*$ ]] || { echo "bad VERSION in config.py: $version" >&2; exit 1; }
@@ -27,7 +39,7 @@ mkdir -p "$top"/{SOURCES,SPECS,BUILD,RPMS,SRPMS} "$out"
 # Source tarball: the files git knows about (and new, unignored ones unless --head).
 tarball=$top/SOURCES/$name-$version.tar.gz
 cd "$src"
-if [[ "${1:-}" == "--head" ]]; then
+if $from_head; then
     git archive --format=tar.gz --prefix="$name-$version/" -o "$tarball" HEAD
 else
     git ls-files -z --cached --others --exclude-standard \
@@ -107,8 +119,14 @@ PYTHONDONTWRITEBYTECODE=1 %{buildroot}%{_prefix}/lib/%{name}/legends-on-linux --
 - Package version $version
 EOF
 
-rpmbuild --define "_topdir $top" -ba "$top/SPECS/$name.spec"
-cp "$top"/RPMS/noarch/*.rpm "$top"/SRPMS/*.src.rpm "$out/"
-(cd "$out" && sha256sum ./*.rpm > SHA256SUMS-rpm)
+if $srpm_only; then
+    rpmbuild --define "_topdir $top" -bs "$top/SPECS/$name.spec"
+    cp "$top"/SRPMS/*.src.rpm "$out/"
+else
+    rpmbuild --define "_topdir $top" -ba "$top/SPECS/$name.spec"
+    cp "$top"/RPMS/noarch/*.rpm "$top"/SRPMS/*.src.rpm "$out/"
+    (cd "$out" && sha256sum ./*.rpm > SHA256SUMS-rpm)
+fi
+rm -rf "$top"
 echo ":: built:"
 ls -1 "$out"/*.rpm
