@@ -56,9 +56,41 @@ def xodus_bin():
     return C.XODUS_DIR / "xodus-cli"
 
 
+_XODUS_LIBS_OK = False
+
+
+def check_xodus_libraries(binary):
+    """Name the host libraries xodus-cli cannot load, instead of a loader error.
+
+    xodus-cli links WebKitGTK 4.1 for the Store sign-in window, so it cannot
+    start at all without it -- not for the download, nor for any launch. The
+    distribution packages depend on it; the AppImage has to find it on the host.
+    """
+    global _XODUS_LIBS_OK
+    if _XODUS_LIBS_OK:
+        return
+    import subprocess
+    try:
+        out = subprocess.run(["ldd", str(binary)], capture_output=True, text=True).stdout
+    except OSError:
+        return
+    missing = sorted({line.split()[0] for line in out.splitlines() if "not found" in line})
+    if missing:
+        raise LolError(
+            "xodus-cli, which downloads and starts the game, needs libraries this system "
+            f"does not have: {', '.join(missing)}.\nInstall WebKitGTK 4.1:\n"
+            "    Fedora:          sudo dnf install webkit2gtk4.1\n"
+            "    Debian/Ubuntu:   sudo apt install libwebkit2gtk-4.1-0\n"
+            "    Arch:            sudo pacman -S webkit2gtk-4.1\n"
+            "    openSUSE:        sudo zypper install libwebkit2gtk-4_1-0\n"
+            "(On SteamOS and other read-only systems, use the Flatpak instead.)")
+    _XODUS_LIBS_OK = True
+
+
 def ensure_xodus():
     binary = xodus_bin()
     if binary.is_file() and _marker_ok(C.XODUS_DIR, C.XODUS_REV):
+        check_xodus_libraries(binary)
         return binary
     archive = download(C.XODUS_URL, C.CACHE / C.XODUS_ASSET, "xodus-cli", C.XODUS_SHA256)
     staging = Path(tempfile.mkdtemp(prefix=".xodus-", dir=C.CACHE))
@@ -72,6 +104,7 @@ def ensure_xodus():
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     ok(f"xodus-cli {C.XODUS_REV} ready")
+    check_xodus_libraries(binary)
     return binary
 
 

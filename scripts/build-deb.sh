@@ -39,7 +39,7 @@ if ! command -v dpkg-deb >/dev/null || ! python3 -m pip --version >/dev/null 2>&
         -e DEBIAN_FRONTEND=noninteractive docker.io/library/debian:trixie bash -c "
             set -e
             apt-get update -qq
-            apt-get install -y -qq --no-install-recommends python3-pip git ca-certificates >/dev/null
+            apt-get install -y -qq --no-install-recommends python3-pip git ca-certificates binutils >/dev/null
             git config --global --add safe.directory '*'
             /src/scripts/build-deb.sh $*"
 fi

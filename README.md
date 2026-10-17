@@ -80,6 +80,24 @@ because Ubuntu's LTS releases do not package it. To build it yourself:
 `scripts/build-deb.sh` (uses a Debian container through podman or docker when
 `dpkg-deb` is not installed).
 
+### AppImage (any distribution)
+
+Download `LegendsOnLinux-*-x86_64.AppImage` from the
+[latest release](https://github.com/mdx0111/LegendsOnLinux/releases/latest),
+make it executable and run it:
+
+```sh
+chmod +x LegendsOnLinux-*-x86_64.AppImage
+./LegendsOnLinux-*-x86_64.AppImage                 # opens the launcher
+./LegendsOnLinux-*-x86_64.AppImage desktop-entry   # optional: add it to the menu
+```
+
+It carries its own Python and Qt. It needs glibc 2.34 or newer (Ubuntu 22.04+,
+Debian 12+, Fedora 35+) and WebKitGTK 4.1 for the Microsoft Store sign-in
+(Fedora: `webkit2gtk4.1`, Debian/Ubuntu: `libwebkit2gtk-4.1-0`); the launcher
+tells you if it is missing. On SteamOS and other read-only systems, use the
+Flatpak. To build it yourself: `scripts/build-appimage.sh`.
+
 ### Flatpak (any distribution)
 
 Download `LegendsOnLinux-*-x86_64.flatpak` from the

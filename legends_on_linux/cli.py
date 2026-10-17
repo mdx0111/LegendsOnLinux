@@ -3,6 +3,7 @@
 
 import argparse
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -64,6 +65,13 @@ def cmd_gui(args):
     try:
         from . import gui
     except ImportError as exc:
+        library = re.search(r"(\S+\.so[.\d]*): cannot open shared object file", str(exc))
+        if library:
+            # PySide6 is there (bundled, or from the system) but Qt cannot load
+            # a system library: say which, not "install PySide6".
+            raise LolError(f"The launcher window needs a system library that is missing: "
+                           f"{library.group(1)}. Install the package that provides it, or "
+                           "use the commands in --help.") from exc
         raise LolError(f"The launcher window needs PySide6 ({exc}). Install it "
                        "(Fedora: sudo dnf install python3-pyside6; elsewhere: "
                        "pip install PySide6), or use the commands in --help.") from exc
@@ -89,8 +97,13 @@ def cmd_desktop_entry(args):
         ok("Removed the launcher from the application menu")
         return
     script = Path(sys.argv[0]).resolve()
-    command = (f'"{script}"' if script.name == "legends-on-linux" and script.is_file()
-               else f'"{sys.executable}" -m legends_on_linux')
+    if os.environ.get("APPIMAGE"):
+        # The AppImage file itself; the mount it runs from is temporary.
+        command = f'"{os.environ["APPIMAGE"]}"'
+    elif script.name == "legends-on-linux" and script.is_file():
+        command = f'"{script}"'
+    else:
+        command = f'"{sys.executable}" -m legends_on_linux'
     for icon in icons:
         target = data / "icons" / "hicolor" / icon.relative_to(C.ASSETS / "icons" / "hicolor")
         target.parent.mkdir(parents=True, exist_ok=True)
