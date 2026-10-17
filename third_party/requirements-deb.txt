@@ -1,0 +1,6 @@
+# PySide6 for the .deb (Ubuntu 22.04/24.04 package none). Pinned by hash;
+# wheels are cp310-abi3 manylinux_2_34_x86_64 (glibc >= 2.34).
+pyside6-essentials==6.11.2 \
+    --hash=sha256:aaf9f25f0f324874085fa5b26a610318db8a8e243cf85bb3e5400595191c7778
+shiboken6==6.11.2 \
+    --hash=sha256:7a7a0a72a9ed26c9bf77d42246b1c736486befb8f31aa2fb29957ea4cdd1c1c2

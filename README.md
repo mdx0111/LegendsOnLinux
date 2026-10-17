@@ -47,7 +47,7 @@ All downloaded components are pinned by SHA-256 in
 - About 13 GB of disk space for the game, plus about 3 GB for the engine and runtime
 
 On Fedora: `sudo dnf install python3-cryptography python3-pyside6 webkit2gtk4.1`
-On Debian/Ubuntu: `sudo apt install python3-cryptography python3-pyside6.qtwidgets libwebkit2gtk-4.1-0`
+On Debian/Ubuntu (from a checkout): `sudo apt install python3-cryptography python3-pyside6.qtwidgets libwebkit2gtk-4.1-0`
 (or `pip install PySide6` where the distribution has no PySide6 package)
 
 ## Getting started
@@ -64,6 +64,21 @@ sudo dnf install ./legends-on-linux-*.noarch.rpm
 
 Then start **LegendsOnLinux** from the application menu, or run `legends-on-linux`.
 To build the package yourself: `scripts/build-rpm.sh` (needs `rpm-build`).
+
+### Debian, Ubuntu, Linux Mint (.deb)
+
+Download the `_amd64.deb` from the
+[latest release](https://github.com/mdx0111/LegendsOnLinux/releases/latest)
+and install it (apt pulls in its dependencies):
+
+```sh
+sudo apt install ./legends-on-linux_*_amd64.deb
+```
+
+It works on Ubuntu 22.04 and newer and Debian 12 and newer. It bundles PySide6,
+because Ubuntu's LTS releases do not package it. To build it yourself:
+`scripts/build-deb.sh` (uses a Debian container through podman or docker when
+`dpkg-deb` is not installed).
 
 ### Launcher window (from a checkout)
 

@@ -42,3 +42,10 @@ original) is the Minecraft Legends icon
 TheWaslijn. SteamGridDB lists it as "official" style: it is based on Mojang's
 artwork for the game. Minecraft and Minecraft Legends are trademarks of
 Microsoft/Mojang; the icon is not covered by this project's MIT licence.
+
+## PySide6 and Qt (in the .deb only) — LGPL-3.0
+https://pypi.org/project/PySide6-Essentials/
+
+The `.deb` bundles the PySide6-Essentials and shiboken6 6.11.2 wheels
+(pinned by hash in `third_party/requirements-deb.txt`) under
+`/usr/lib/legends-on-linux/vendor`, with unused Qt modules removed.
