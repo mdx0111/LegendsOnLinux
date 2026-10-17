@@ -1,0 +1,90 @@
+From ff5752b334c3aef32b25861e3c776e0fc4017bee Mon Sep 17 00:00:00 2001
+From: Masoud <masouddehghani@hotmail.com>
+Date: Sat, 17 Oct 2026 22:24:49 +0100
+Subject: [PATCH] xgameruntime: Answer the game-license query with an active
+ license.
+
+Minecraft Legends blocks its first loading screen until
+XStoreQueryGameLicenseAsync reports an active license.  Keep the product
+query failing (it hands back handles the caller walks), but complete the
+license query with a full, non-trial XStoreGameLicense.  The structure is
+104 bytes on x64 (STORE_SKU_ID_SIZE 18, TRIAL_UNIQUE_ID_MAX_SIZE 64).
+---
+ .../xgameruntime/GDKComponent/System/XStore.c | 53 +++++++++++++++++--
+ 1 file changed, 50 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/xgameruntime/GDKComponent/System/XStore.c b/dlls/xgameruntime/GDKComponent/System/XStore.c
+index 11b6028..f8e24df 100644
+--- a/dlls/xgameruntime/GDKComponent/System/XStore.c
++++ b/dlls/xgameruntime/GDKComponent/System/XStore.c
+@@ -50,17 +50,64 @@ static HRESULT WINAPI store_CreateContext( void *iface, void *user, void **conte
+  * Answer with a store error instead.  It needs no queue, touches nothing the
+  * title owns, and puts store code on a path it already has to handle. */
+ 
++/* The game license is the exception.  Some titles (Minecraft Legends) block
++ * their loading screen until XStoreQueryGameLicenseAsync reports an active
++ * license, so answer it with a full, non-trial license for the package the
++ * title runs from.  Unlike the product query this hands back plain data and
++ * no handles, so there is nothing for the caller to walk.  The foreign task
++ * queue concern above is handled by XAsync's sidecar-queue support. */
++
++/* XStore.h: STORE_SKU_ID_SIZE 18 ("XXXXXXXXXXXX/XXXX"), TRIAL_UNIQUE_ID_MAX_SIZE 64 */
++struct store_game_license
++{
++    char skuStoreId[18];
++    BOOLEAN isActive;
++    BOOLEAN isTrialOwnedByThisUser;
++    BOOLEAN isDiscLicense;
++    BOOLEAN isTrial;
++    UINT32 trialTimeRemainingInSeconds;
++    char trialUniqueId[64];
++    INT64 expirationDate;
++};
++C_ASSERT( sizeof(struct store_game_license) == 104 );
++
++static HRESULT CALLBACK store_license_provider( XAsyncOp op, const XAsyncProviderData *data )
++{
++    if (!data) return E_POINTER;
++
++    switch (op)
++    {
++        case Begin:
++            return XAsyncSchedule( data->async, 0 );
++        case DoWork:
++            TRACE( "license DoWork\n" );
++            XAsyncComplete( data->async, S_OK, sizeof(struct store_game_license) );
++            break;
++        case GetResult:
++        {
++            struct store_game_license *license = data->buffer;
++            memset( license, 0, sizeof(*license) );
++            strcpy( license->skuStoreId, "9N98Z825TNFW/0010" );
++            license->isActive = TRUE;
++            break;
++        }
++        case Cleanup:
++        case Cancel:
++            break;
++    }
++    return S_OK;
++}
++
+ static HRESULT WINAPI store_QueryGameLicenseAsync( void *iface, void *context, void *asyncBlock )
+ {
+     TRACE( "iface %p, context %p, asyncBlock %p\n", iface, context, asyncBlock );
+-    WARN( "no store service available, failing the game-license query\n" );
+-    return E_GAMESTORE_NETWORK_ERROR;
++    return XAsyncBegin( asyncBlock, NULL, store_QueryGameLicenseAsync, "XStoreQueryGameLicenseAsync", store_license_provider );
+ }
+ 
+ static HRESULT WINAPI store_QueryGameLicenseResult( void *iface, void *asyncBlock, void *license )
+ {
+     TRACE( "iface %p, asyncBlock %p, license %p\n", iface, asyncBlock, license );
+-    return E_GAMESTORE_NETWORK_ERROR;
++    return XAsyncGetResult( asyncBlock, store_QueryGameLicenseAsync, sizeof(struct store_game_license), license, NULL );
+ }
+ 
+ /* XStoreQueryAssociatedProductsAsync(this, storeContext, productKinds, maxItems, asyncBlock) */
+-- 
+2.56.0
+

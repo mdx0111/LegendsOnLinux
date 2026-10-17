@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Local engine builds and logs
+*.dll
+*.log
+xcurl.log
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

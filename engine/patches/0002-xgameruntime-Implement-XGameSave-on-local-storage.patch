@@ -1,0 +1,1264 @@
+From 991543b27927ce8080393b46ee604d5fd0e5a815 Mon Sep 17 00:00:00 2001
+From: Masoud <masouddehghani@hotmail.com>
+Date: Sat, 17 Oct 2026 22:24:49 +0100
+Subject: [PATCH] xgameruntime: Implement XGameSave on local storage.
+
+Add the XGameSave composite ({704c3f58-e629-4cc2-b197-30511b996fe2}).
+Titles reach it through xgameruntime.lib thunks that call slot
+3 + n for the n-th function of XGameSave.h.  Containers are kept as
+directories and blobs as files under
+%LOCALAPPDATA%\WineGDK\XGameSave\<SCID>, updates are staged and
+renamed into place, and asynchronous calls run on the native GDK
+threading sidecar so the title's XAsyncGetStatus/XAsyncGetResultSize
+find native state.  Also define the E_GS_* error codes.
+
+Minecraft Legends waits on "Loading, please wait" forever without it.
+---
+ .../GDKComponent/System/XGameSave.c           | 1177 +++++++++++++++++
+ dlls/xgameruntime/Makefile.in                 |    1 +
+ dlls/xgameruntime/main.c                      |    8 +
+ include/xgameerr.h                            |   15 +
+ 4 files changed, 1201 insertions(+)
+ create mode 100644 dlls/xgameruntime/GDKComponent/System/XGameSave.c
+
+diff --git a/dlls/xgameruntime/GDKComponent/System/XGameSave.c b/dlls/xgameruntime/GDKComponent/System/XGameSave.c
+new file mode 100644
+index 0000000..e2d9c80
+--- /dev/null
++++ b/dlls/xgameruntime/GDKComponent/System/XGameSave.c
+@@ -0,0 +1,1177 @@
++/*
++ * Xbox Game runtime Library
++ *  GDK Component: System API -> XGameSave
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++/*
++ * XGameSave composite for {704c3f58-e629-4cc2-b197-30511b996fe2}.
++ *
++ * There is no connected-storage service behind it: containers are kept as
++ * directories and blobs as files under
++ * %LOCALAPPDATA%\WineGDK\XGameSave\<SCID>\, so saves stay on this machine and
++ * never sync with the cloud.  The vtable follows the declaration order of
++ * XGameSave.h (slot = 3 + index), which matches the argument shapes of the
++ * xgameruntime.lib thunks titles link against.
++ *
++ * Asynchronous calls run on the native GDK threading sidecar when it is
++ * present.  QueryApiImpl hands titles that sidecar for XThreading, so the
++ * XAsyncGetStatus/XAsyncGetResultSize they call on these blocks are native
++ * and must find native async state in them.
++ */
++
++#include "../../private.h"
++#include "Threading/XAsync.h"
++
++#include <stdio.h>
++#include <string.h>
++
++WINE_DEFAULT_DEBUG_CHANNEL(gdkc);
++
++typedef struct XGameSaveBlobInfo
++{
++    const char *name;
++    UINT32 size;
++} XGameSaveBlobInfo;
++
++typedef struct XGameSaveBlob
++{
++    XGameSaveBlobInfo info;
++    UINT8 *data;
++} XGameSaveBlob;
++
++typedef struct XGameSaveContainerInfo
++{
++    const char *name;
++    const char *displayName;
++    UINT32 blobCount;
++    UINT64 totalSize;
++    INT64 lastModifiedTime;
++    BOOLEAN needsSync;
++} XGameSaveContainerInfo;
++
++C_ASSERT( sizeof(XGameSaveBlobInfo) == 16 );
++C_ASSERT( sizeof(XGameSaveBlob) == 24 );
++C_ASSERT( sizeof(XGameSaveContainerInfo) == 48 );
++
++/* The callbacks return a C++ bool. */
++typedef BOOLEAN (CALLBACK *XGameSaveContainerInfoCallback)( const XGameSaveContainerInfo *info, void *context );
++typedef BOOLEAN (CALLBACK *XGameSaveBlobInfoCallback)( const XGameSaveBlobInfo *info, void *context );
++
++#define GS_MAX_BLOB_SIZE   (16 * 1024 * 1024)
++#define GS_QUOTA           ((INT64)256 * 1024 * 1024)
++#define GS_DISPLAY_NAME    L"~displayname"
++
++struct gs_provider
++{
++    WCHAR root[MAX_PATH];
++};
++
++struct gs_container
++{
++    struct gs_provider *provider;
++    char *name;
++    WCHAR dir[MAX_PATH];
++};
++
++struct gs_update_op
++{
++    char *name;
++    BYTE *data;
++    UINT32 size;
++    BOOLEAN remove;
++};
++
++struct gs_update
++{
++    struct gs_container *container;
++    char *display_name;
++    struct gs_update_op *ops;
++    UINT32 count, capacity;
++};
++
++struct gs_staged_blob
++{
++    char *name;
++    BYTE *data;
++    UINT32 size;
++};
++
++static SRWLOCK gs_lock = SRWLOCK_INIT;
++
++/* --- helpers --- */
++
++static char *gs_strdup( const char *str )
++{
++    char *ret;
++    if (!str) str = "";
++    if ((ret = malloc( strlen( str ) + 1 ))) strcpy( ret, str );
++    return ret;
++}
++
++/* Container and blob names may hold '/' and other characters a file name
++ * cannot.  Keep [A-Za-z0-9_-] and percent-encode every other byte, so an
++ * encoded name never contains '.' or '~', which stay free for our own files. */
++static BOOL gs_encode_name( const char *name, WCHAR *out, SIZE_T len )
++{
++    static const char hex[] = "0123456789ABCDEF";
++    SIZE_T pos = 0;
++    const unsigned char *p;
++
++    if (!name || !*name) return FALSE;
++    for (p = (const unsigned char *)name; *p; p++)
++    {
++        if (pos + 4 >= len) return FALSE;
++        if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
++            (*p >= '0' && *p <= '9') || *p == '_' || *p == '-')
++            out[pos++] = *p;
++        else
++        {
++            out[pos++] = '%';
++            out[pos++] = hex[*p >> 4];
++            out[pos++] = hex[*p & 0xf];
++        }
++    }
++    out[pos] = 0;
++    return TRUE;
++}
++
++static int gs_hex_value( WCHAR c )
++{
++    if (c >= '0' && c <= '9') return c - '0';
++    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
++    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
++    return -1;
++}
++
++/* Returns NULL for names we did not encode (temporary and metadata files). */
++static char *gs_decode_name( const WCHAR *enc )
++{
++    SIZE_T len = wcslen( enc ), pos = 0;
++    const WCHAR *p;
++    char *ret;
++
++    if (!len || wcschr( enc, '.' ) || wcschr( enc, '~' )) return NULL;
++    if (!(ret = malloc( len + 1 ))) return NULL;
++    for (p = enc; *p; p++)
++    {
++        if (*p == '%' && gs_hex_value( p[1] ) >= 0 && gs_hex_value( p[2] ) >= 0)
++        {
++            ret[pos++] = (char)(gs_hex_value( p[1] ) << 4 | gs_hex_value( p[2] ));
++            p += 2;
++        }
++        else ret[pos++] = (char)*p;
++    }
++    ret[pos] = 0;
++    return ret;
++}
++
++static BOOL gs_join( WCHAR *out, const WCHAR *dir, const WCHAR *name )
++{
++    if (wcslen( dir ) + wcslen( name ) + 2 > MAX_PATH) return FALSE;
++    swprintf( out, MAX_PATH, L"%s\\%s", dir, name );
++    return TRUE;
++}
++
++static BOOL gs_blob_path( const struct gs_container *container, const char *name, WCHAR *out )
++{
++    WCHAR enc[MAX_PATH];
++    return gs_encode_name( name, enc, ARRAY_SIZE(enc) ) && gs_join( out, container->dir, enc );
++}
++
++static void gs_create_dirs( const WCHAR *path )
++{
++    WCHAR buf[MAX_PATH];
++    WCHAR *p;
++
++    lstrcpynW( buf, path, ARRAY_SIZE(buf) );
++    for (p = buf + 3; *p; p++)
++    {
++        if (*p != '\\') continue;
++        *p = 0;
++        CreateDirectoryW( buf, NULL );
++        *p = '\\';
++    }
++    CreateDirectoryW( buf, NULL );
++}
++
++static INT64 gs_filetime_to_time( const FILETIME *ft )
++{
++    ULONGLONG t = ((ULONGLONG)ft->dwHighDateTime << 32) | ft->dwLowDateTime;
++    return t < 116444736000000000ull ? 0 : (INT64)((t - 116444736000000000ull) / 10000000);
++}
++
++static char *gs_read_display_name( const WCHAR *dir )
++{
++    WCHAR path[MAX_PATH];
++    DWORD size, read = 0;
++    HANDLE file;
++    char *ret;
++
++    if (!gs_join( path, dir, GS_DISPLAY_NAME )) return gs_strdup( "" );
++    file = CreateFileW( path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL );
++    if (file == INVALID_HANDLE_VALUE) return gs_strdup( "" );
++    size = GetFileSize( file, NULL );
++    if (size == INVALID_FILE_SIZE || size > 4096) size = 0;
++    if ((ret = calloc( 1, size + 1 ))) ReadFile( file, ret, size, &read, NULL );
++    CloseHandle( file );
++    return ret;
++}
++
++static BOOL gs_write_file( const WCHAR *path, const void *data, DWORD size )
++{
++    DWORD written = 0;
++    HANDLE file = CreateFileW( path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL );
++    BOOL ok;
++
++    if (file == INVALID_HANDLE_VALUE) return FALSE;
++    ok = (!size || WriteFile( file, data, size, &written, NULL )) && written == size;
++    ok = FlushFileBuffers( file ) && ok;
++    CloseHandle( file );
++    return ok;
++}
++
++/* Calls fn for every blob file of a container directory; stops when fn
++ * returns FALSE.  Missing directories simply have no blobs. */
++static void gs_for_each_blob( const WCHAR *dir, BOOL (*fn)( const char *name, const WIN32_FIND_DATAW *fd, void *ctx ), void *ctx )
++{
++    WIN32_FIND_DATAW fd;
++    WCHAR pattern[MAX_PATH];
++    HANDLE find;
++    char *name;
++    BOOL more = TRUE;
++
++    if (!gs_join( pattern, dir, L"*" )) return;
++    if ((find = FindFirstFileW( pattern, &fd )) == INVALID_HANDLE_VALUE) return;
++    do
++    {
++        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
++        if (!(name = gs_decode_name( fd.cFileName ))) continue;
++        more = fn( name, &fd, ctx );
++        free( name );
++    } while (more && FindNextFileW( find, &fd ));
++    FindClose( find );
++}
++
++struct gs_totals
++{
++    UINT32 count;
++    UINT64 size;
++    INT64 modified;
++};
++
++static BOOL gs_add_totals( const char *name, const WIN32_FIND_DATAW *fd, void *ctx )
++{
++    struct gs_totals *totals = ctx;
++    INT64 modified = gs_filetime_to_time( &fd->ftLastWriteTime );
++    totals->count++;
++    totals->size += fd->nFileSizeLow;
++    if (modified > totals->modified) totals->modified = modified;
++    return TRUE;
++}
++
++/* Reports one container to the caller; returns what the callback returned. */
++static BOOLEAN gs_report_container( const struct gs_provider *provider, const WCHAR *enc,
++                                    XGameSaveContainerInfoCallback callback, void *context )
++{
++    XGameSaveContainerInfo info = {0};
++    struct gs_totals totals = {0};
++    WCHAR dir[MAX_PATH];
++    char *name, *display;
++    BOOLEAN ret;
++
++    if (!(name = gs_decode_name( enc )) || !gs_join( dir, provider->root, enc ))
++    {
++        free( name );
++        return TRUE;
++    }
++    gs_for_each_blob( dir, gs_add_totals, &totals );
++    display = gs_read_display_name( dir );
++
++    info.name = name;
++    info.displayName = display ? display : "";
++    info.blobCount = totals.count;
++    info.totalSize = totals.size;
++    info.lastModifiedTime = totals.modified;
++    info.needsSync = FALSE;
++    ret = callback( &info, context );
++
++    free( display );
++    free( name );
++    return ret;
++}
++
++static HRESULT gs_enumerate_containers( const struct gs_provider *provider, const char *prefix,
++                                        void *context, XGameSaveContainerInfoCallback callback )
++{
++    WIN32_FIND_DATAW fd;
++    WCHAR pattern[MAX_PATH];
++    HANDLE find;
++    char *name;
++    BOOLEAN more = TRUE;
++
++    if (!provider || !callback) return E_INVALIDARG;
++    if (!gs_join( pattern, provider->root, L"*" )) return E_FAIL;
++
++    AcquireSRWLockShared( &gs_lock );
++    if ((find = FindFirstFileW( pattern, &fd )) != INVALID_HANDLE_VALUE)
++    {
++        do
++        {
++            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
++            if (!(name = gs_decode_name( fd.cFileName ))) continue;
++            if (!prefix || !strncmp( name, prefix, strlen( prefix ) ))
++                more = gs_report_container( provider, fd.cFileName, callback, context );
++            free( name );
++        } while (more && FindNextFileW( find, &fd ));
++        FindClose( find );
++    }
++    ReleaseSRWLockShared( &gs_lock );
++    return S_OK;
++}
++
++static HRESULT gs_delete_container( struct gs_provider *provider, const char *name )
++{
++    WIN32_FIND_DATAW fd;
++    WCHAR enc[MAX_PATH], dir[MAX_PATH], pattern[MAX_PATH], path[MAX_PATH];
++    HANDLE find;
++
++    if (!provider) return E_INVALIDARG;
++    if (!gs_encode_name( name, enc, ARRAY_SIZE(enc) ) || !gs_join( dir, provider->root, enc ))
++        return E_GS_INVALID_CONTAINER_NAME;
++    if (!gs_join( pattern, dir, L"*" )) return E_FAIL;
++
++    AcquireSRWLockExclusive( &gs_lock );
++    if ((find = FindFirstFileW( pattern, &fd )) != INVALID_HANDLE_VALUE)
++    {
++        do
++        {
++            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
++            if (gs_join( path, dir, fd.cFileName )) DeleteFileW( path );
++        } while (FindNextFileW( find, &fd ));
++        FindClose( find );
++    }
++    RemoveDirectoryW( dir );
++    ReleaseSRWLockExclusive( &gs_lock );
++    return S_OK;
++}
++
++static void gs_free_staged( struct gs_staged_blob *blobs, UINT32 count )
++{
++    UINT32 i;
++    if (!blobs) return;
++    for (i = 0; i < count; i++)
++    {
++        free( blobs[i].name );
++        free( blobs[i].data );
++    }
++    free( blobs );
++}
++
++static HRESULT gs_load_blob( const struct gs_container *container, const char *name, struct gs_staged_blob *blob )
++{
++    WCHAR path[MAX_PATH];
++    LARGE_INTEGER size;
++    DWORD read = 0;
++    HANDLE file;
++    HRESULT hr = S_OK;
++
++    if (!gs_blob_path( container, name, path )) return E_GS_BLOB_NOT_FOUND;
++    file = CreateFileW( path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL );
++    if (file == INVALID_HANDLE_VALUE) return E_GS_BLOB_NOT_FOUND;
++
++    if (!GetFileSizeEx( file, &size ) || size.QuadPart > GS_MAX_BLOB_SIZE) hr = E_FAIL;
++    else if (!(blob->name = gs_strdup( name ))) hr = E_OUTOFMEMORY;
++    else if (size.QuadPart && !(blob->data = malloc( size.QuadPart ))) hr = E_OUTOFMEMORY;
++    else if (size.QuadPart && (!ReadFile( file, blob->data, size.LowPart, &read, NULL ) || read != size.LowPart))
++        hr = E_FAIL;
++    blob->size = size.LowPart;
++    CloseHandle( file );
++    return hr;
++}
++
++struct gs_name_list
++{
++    char **names;
++    UINT32 count, capacity;
++};
++
++static BOOL gs_collect_name( const char *name, const WIN32_FIND_DATAW *fd, void *ctx )
++{
++    struct gs_name_list *list = ctx;
++    char **names;
++
++    if (list->count == list->capacity)
++    {
++        UINT32 capacity = list->capacity ? list->capacity * 2 : 16;
++        if (!(names = realloc( list->names, capacity * sizeof(*names) ))) return FALSE;
++        list->names = names;
++        list->capacity = capacity;
++    }
++    if ((list->names[list->count] = gs_strdup( name ))) list->count++;
++    return TRUE;
++}
++
++/* Reads the named blobs (all of them when no names are given) into memory. */
++static HRESULT gs_stage_blobs( const struct gs_container *container, const char **names, UINT32 count,
++                               struct gs_staged_blob **out, UINT32 *out_count, SIZE_T *required )
++{
++    struct gs_name_list all = {0};
++    struct gs_staged_blob *blobs;
++    HRESULT hr = S_OK;
++    UINT32 i;
++
++    *out = NULL;
++    *out_count = 0;
++    *required = 0;
++    if (!container) return E_INVALIDARG;
++
++    AcquireSRWLockShared( &gs_lock );
++    if (!names || !count)
++    {
++        gs_for_each_blob( container->dir, gs_collect_name, &all );
++        names = (const char **)all.names;
++        count = all.count;
++    }
++    if (count && !(blobs = calloc( count, sizeof(*blobs) ))) hr = E_OUTOFMEMORY;
++    else if (!count) blobs = NULL;
++    for (i = 0; SUCCEEDED( hr ) && i < count; i++)
++    {
++        if (FAILED( hr = gs_load_blob( container, names[i], &blobs[i] ) ))
++            WARN( "blob %s in %s: 0x%08lx\n", debugstr_a( names[i] ), debugstr_a( container->name ), hr );
++        else
++            *required += sizeof(XGameSaveBlob) + strlen( blobs[i].name ) + 1 + blobs[i].size;
++    }
++    ReleaseSRWLockShared( &gs_lock );
++
++    for (i = 0; i < all.count; i++) free( all.names[i] );
++    free( all.names );
++
++    if (FAILED( hr ))
++    {
++        gs_free_staged( blobs, count );
++        *required = 0;
++        return hr;
++    }
++    *out = blobs;
++    *out_count = count;
++    return S_OK;
++}
++
++/* Lays the blobs out in one caller buffer: the XGameSaveBlob array first,
++ * then each name and its data, which the array entries point into. */
++static HRESULT gs_layout_blobs( const struct gs_staged_blob *blobs, UINT32 count, SIZE_T size, void *buffer )
++{
++    XGameSaveBlob *out = buffer;
++    char *pos = (char *)buffer + count * sizeof(XGameSaveBlob);
++    char *end = (char *)buffer + size;
++    UINT32 i;
++
++    if (!count) return S_OK;
++    if (!buffer || size < count * sizeof(XGameSaveBlob)) return E_GS_PROVIDED_BUFFER_TOO_SMALL;
++    for (i = 0; i < count; i++)
++    {
++        SIZE_T name_len = strlen( blobs[i].name ) + 1;
++        if ((SIZE_T)(end - pos) < name_len + blobs[i].size) return E_GS_PROVIDED_BUFFER_TOO_SMALL;
++        memcpy( pos, blobs[i].name, name_len );
++        out[i].info.name = pos;
++        out[i].info.size = blobs[i].size;
++        pos += name_len;
++        if (blobs[i].size) memcpy( pos, blobs[i].data, blobs[i].size );
++        out[i].data = (UINT8 *)pos;
++        pos += blobs[i].size;
++    }
++    return S_OK;
++}
++
++/* gs_layout_blobs puts the first name right behind the array. */
++static UINT32 gs_count_laid_out_blobs( const void *buffer, SIZE_T size )
++{
++    const XGameSaveBlob *blobs = buffer;
++    if (!buffer || size < sizeof(XGameSaveBlob)) return 0;
++    return (UINT32)(((const char *)blobs[0].info.name - (const char *)buffer) / sizeof(XGameSaveBlob));
++}
++
++static HRESULT gs_submit_update( struct gs_update *update )
++{
++    struct gs_container *container;
++    WCHAR path[MAX_PATH], temp[MAX_PATH];
++    HRESULT hr = S_OK;
++    UINT64 total = 0;
++    UINT32 i;
++
++    if (!update || !(container = update->container)) return E_INVALIDARG;
++    for (i = 0; i < update->count; i++) total += update->ops[i].size;
++    if (total > GS_MAX_BLOB_SIZE) return E_GS_UPDATE_TOO_BIG;
++
++    AcquireSRWLockExclusive( &gs_lock );
++    gs_create_dirs( container->dir );
++
++    /* Stage every write first so a failure leaves the container untouched. */
++    for (i = 0; SUCCEEDED( hr ) && i < update->count; i++)
++    {
++        struct gs_update_op *op = &update->ops[i];
++        if (op->remove) continue;
++        if (!gs_blob_path( container, op->name, path ) || wcslen( path ) + 5 > MAX_PATH)
++            hr = E_GS_INVALID_CONTAINER_NAME;
++        else
++        {
++            swprintf( temp, MAX_PATH, L"%s.tmp", path );
++            if (!gs_write_file( temp, op->data, op->size )) hr = E_GS_OUT_OF_LOCAL_STORAGE;
++        }
++    }
++    for (i = 0; i < update->count; i++)
++    {
++        struct gs_update_op *op = &update->ops[i];
++        if (!gs_blob_path( container, op->name, path )) continue;
++        swprintf( temp, MAX_PATH, L"%s.tmp", path );
++        if (FAILED( hr )) DeleteFileW( temp );
++        else if (op->remove) DeleteFileW( path );
++        else if (!MoveFileExW( temp, path, MOVEFILE_REPLACE_EXISTING ))
++            hr = HRESULT_FROM_WIN32( GetLastError() );
++    }
++    if (SUCCEEDED( hr ) && update->display_name && gs_join( path, container->dir, GS_DISPLAY_NAME ))
++        gs_write_file( path, update->display_name, strlen( update->display_name ) );
++    ReleaseSRWLockExclusive( &gs_lock );
++
++    TRACE( "container %s, %u ops, %s bytes -> 0x%08lx\n", debugstr_a( container->name ),
++           update->count, wine_dbgstr_longlong( total ), hr );
++    return hr;
++}
++
++static INT64 gs_used_bytes( const struct gs_provider *provider )
++{
++    WIN32_FIND_DATAW fd;
++    WCHAR pattern[MAX_PATH], dir[MAX_PATH];
++    struct gs_totals totals = {0};
++    HANDLE find;
++
++    if (!gs_join( pattern, provider->root, L"*" )) return 0;
++    AcquireSRWLockShared( &gs_lock );
++    if ((find = FindFirstFileW( pattern, &fd )) != INVALID_HANDLE_VALUE)
++    {
++        do
++        {
++            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == '.') continue;
++            if (gs_join( dir, provider->root, fd.cFileName )) gs_for_each_blob( dir, gs_add_totals, &totals );
++        } while (FindNextFileW( find, &fd ));
++        FindClose( find );
++    }
++    ReleaseSRWLockShared( &gs_lock );
++    return totals.size;
++}
++
++static HRESULT gs_get_remaining_quota( struct gs_provider *provider, INT64 *quota )
++{
++    INT64 used;
++    if (!provider || !quota) return E_INVALIDARG;
++    used = gs_used_bytes( provider );
++    *quota = used < GS_QUOTA ? GS_QUOTA - used : 0;
++    return S_OK;
++}
++
++static HRESULT gs_initialize_provider( const char *scid, struct gs_provider **out )
++{
++    struct gs_provider *provider;
++    WCHAR base[MAX_PATH], enc[MAX_PATH];
++    DWORD len;
++
++    if (!out) return E_INVALIDARG;
++    *out = NULL;
++    if (!gs_encode_name( scid && *scid ? scid : "default", enc, ARRAY_SIZE(enc) )) return E_INVALIDARG;
++
++    len = GetEnvironmentVariableW( L"LOCALAPPDATA", base, ARRAY_SIZE(base) );
++    if (!len || len >= ARRAY_SIZE(base)) lstrcpyW( base, L"C:\\users\\Public\\AppData\\Local" );
++
++    if (!(provider = calloc( 1, sizeof(*provider) ))) return E_OUTOFMEMORY;
++    if (wcslen( base ) + wcslen( enc ) + 32 > MAX_PATH)
++    {
++        free( provider );
++        return E_FAIL;
++    }
++    swprintf( provider->root, MAX_PATH, L"%s\\WineGDK\\XGameSave\\%s", base, enc );
++    gs_create_dirs( provider->root );
++
++    TRACE( "scid %s -> %s\n", debugstr_a( scid ), debugstr_w( provider->root ) );
++    *out = provider;
++    return S_OK;
++}
++
++/* --- async plumbing (native sidecar when available) --- */
++
++static HRESULT gs_async_begin( XAsyncBlock *async, void *context, const void *identity,
++                               LPCSTR name, XAsyncProviderCallback *provider )
++{
++    IXThreadingImpl *native = WineGDKGetNativeThreading();
++    if (native) return IXThreadingImpl_XAsyncBegin( native, async, context, (PVOID)identity, name, provider );
++    return XAsyncBegin( async, context, (PVOID)identity, name, provider );
++}
++
++static HRESULT gs_async_schedule( XAsyncBlock *async )
++{
++    IXThreadingImpl *native = WineGDKGetNativeThreading();
++    if (native) return IXThreadingImpl_XAsyncSchedule( native, async, 0 );
++    return XAsyncSchedule( async, 0 );
++}
++
++static void gs_async_complete( XAsyncBlock *async, HRESULT hr, SIZE_T size )
++{
++    IXThreadingImpl *native = WineGDKGetNativeThreading();
++    if (native) IXThreadingImpl_XAsyncComplete( native, async, hr, size );
++    else XAsyncComplete( async, hr, size );
++}
++
++static HRESULT gs_async_get_result( XAsyncBlock *async, const void *identity, SIZE_T size, void *buffer, SIZE_T *used )
++{
++    IXThreadingImpl *native = WineGDKGetNativeThreading();
++    if (native) return IXThreadingImpl_XAsyncGetResult( native, async, (PVOID)identity, size, buffer, used );
++    return XAsyncGetResult( async, (PVOID)identity, size, buffer, used );
++}
++
++enum gs_async_kind
++{
++    GS_ASYNC_INIT,
++    GS_ASYNC_QUOTA,
++    GS_ASYNC_DELETE,
++    GS_ASYNC_READ,
++    GS_ASYNC_SUBMIT,
++};
++
++struct gs_async
++{
++    enum gs_async_kind kind;
++    /* inputs */
++    char *scid;
++    struct gs_provider *provider;
++    char *name;
++    struct gs_container *container;
++    char **names;
++    UINT32 name_count;
++    struct gs_update *update;
++    /* outputs */
++    struct gs_provider *new_provider;
++    INT64 quota;
++    struct gs_staged_blob *blobs;
++    UINT32 blob_count;
++};
++
++static void gs_async_free( struct gs_async *op )
++{
++    UINT32 i;
++    free( op->scid );
++    free( op->name );
++    for (i = 0; i < op->name_count; i++) free( op->names[i] );
++    free( op->names );
++    gs_free_staged( op->blobs, op->blob_count );
++    free( op->new_provider );
++    free( op );
++}
++
++static HRESULT CALLBACK gs_async_provider( XAsyncOp op, const XAsyncProviderData *data )
++{
++    struct gs_async *ctx = data->context;
++    SIZE_T size = 0;
++    HRESULT hr;
++
++    switch (op)
++    {
++    case Begin:
++        return gs_async_schedule( data->async );
++
++    case DoWork:
++        switch (ctx->kind)
++        {
++        case GS_ASYNC_INIT:
++            hr = gs_initialize_provider( ctx->scid, &ctx->new_provider );
++            size = sizeof(struct gs_provider *);
++            break;
++        case GS_ASYNC_QUOTA:
++            hr = gs_get_remaining_quota( ctx->provider, &ctx->quota );
++            size = sizeof(INT64);
++            break;
++        case GS_ASYNC_DELETE:
++            hr = gs_delete_container( ctx->provider, ctx->name );
++            break;
++        case GS_ASYNC_READ:
++            hr = gs_stage_blobs( ctx->container, (const char **)ctx->names, ctx->name_count,
++                                 &ctx->blobs, &ctx->blob_count, &size );
++            break;
++        case GS_ASYNC_SUBMIT:
++            hr = gs_submit_update( ctx->update );
++            break;
++        default:
++            hr = E_UNEXPECTED;
++        }
++        gs_async_complete( data->async, hr, SUCCEEDED( hr ) ? size : 0 );
++        /* Completed above; E_PENDING keeps the worker from completing again. */
++        return E_PENDING;
++
++    case GetResult:
++        switch (ctx->kind)
++        {
++        case GS_ASYNC_INIT:
++            if (data->bufferSize < sizeof(ctx->new_provider)) return E_GS_PROVIDED_BUFFER_TOO_SMALL;
++            *(struct gs_provider **)data->buffer = ctx->new_provider;
++            ctx->new_provider = NULL;
++            return S_OK;
++        case GS_ASYNC_QUOTA:
++            if (data->bufferSize < sizeof(INT64)) return E_GS_PROVIDED_BUFFER_TOO_SMALL;
++            *(INT64 *)data->buffer = ctx->quota;
++            return S_OK;
++        case GS_ASYNC_READ:
++            return gs_layout_blobs( ctx->blobs, ctx->blob_count, data->bufferSize, data->buffer );
++        default:
++            return S_OK;
++        }
++
++    case Cancel:
++        return S_OK;
++
++    case Cleanup:
++        gs_async_free( ctx );
++        return S_OK;
++    }
++    return S_OK;
++}
++
++static HRESULT gs_async_start( struct gs_async *ctx, XAsyncBlock *async, const void *identity, LPCSTR name )
++{
++    HRESULT hr;
++    if (!async)
++    {
++        gs_async_free( ctx );
++        return E_INVALIDARG;
++    }
++    if (FAILED( hr = gs_async_begin( async, ctx, identity, name, gs_async_provider ) ))
++    {
++        WARN( "%s: XAsyncBegin failed 0x%08lx\n", name, hr );
++        gs_async_free( ctx );
++    }
++    return hr;
++}
++
++/* --- vtable --- */
++
++static HRESULT WINAPI gs_QueryInterface( void *iface, REFIID iid, void **out )
++{
++    TRACE( "iface %p, iid %s, out %p\n", iface, debugstr_guid( iid ), out );
++    if (!out) return E_POINTER;
++    *out = iface;
++    return S_OK;
++}
++
++static ULONG WINAPI gs_AddRef( void *iface ) { return 2; }
++static ULONG WINAPI gs_Release( void *iface ) { return 1; }
++
++/* 3 */
++static HRESULT WINAPI gs_InitializeProvider( void *iface, void *user, const char *scid, BOOLEAN syncOnDemand, struct gs_provider **provider )
++{
++    TRACE( "user %p, scid %s, syncOnDemand %d, provider %p\n", user, debugstr_a( scid ), syncOnDemand, provider );
++    return gs_initialize_provider( scid, provider );
++}
++
++/* 4 */
++static HRESULT WINAPI gs_InitializeProviderAsync( void *iface, void *user, const char *scid, BOOLEAN syncOnDemand, XAsyncBlock *async )
++{
++    struct gs_async *ctx;
++    TRACE( "user %p, scid %s, syncOnDemand %d, async %p\n", user, debugstr_a( scid ), syncOnDemand, async );
++    if (!(ctx = calloc( 1, sizeof(*ctx) ))) return E_OUTOFMEMORY;
++    ctx->kind = GS_ASYNC_INIT;
++    ctx->scid = gs_strdup( scid );
++    return gs_async_start( ctx, async, gs_InitializeProviderAsync, "XGameSaveInitializeProviderAsync" );
++}
++
++/* 5 */
++static HRESULT WINAPI gs_InitializeProviderResult( void *iface, XAsyncBlock *async, struct gs_provider **provider )
++{
++    TRACE( "async %p, provider %p\n", async, provider );
++    return gs_async_get_result( async, gs_InitializeProviderAsync, sizeof(*provider), provider, NULL );
++}
++
++/* 6 */
++static void WINAPI gs_CloseProvider( void *iface, struct gs_provider *provider )
++{
++    TRACE( "provider %p\n", provider );
++    free( provider );
++}
++
++/* 7 */
++static HRESULT WINAPI gs_GetRemainingQuota( void *iface, struct gs_provider *provider, INT64 *quota )
++{
++    TRACE( "provider %p, quota %p\n", provider, quota );
++    return gs_get_remaining_quota( provider, quota );
++}
++
++/* 8 */
++static HRESULT WINAPI gs_GetRemainingQuotaAsync( void *iface, struct gs_provider *provider, XAsyncBlock *async )
++{
++    struct gs_async *ctx;
++    TRACE( "provider %p, async %p\n", provider, async );
++    if (!(ctx = calloc( 1, sizeof(*ctx) ))) return E_OUTOFMEMORY;
++    ctx->kind = GS_ASYNC_QUOTA;
++    ctx->provider = provider;
++    return gs_async_start( ctx, async, gs_GetRemainingQuotaAsync, "XGameSaveGetRemainingQuotaAsync" );
++}
++
++/* 9 */
++static HRESULT WINAPI gs_GetRemainingQuotaResult( void *iface, XAsyncBlock *async, INT64 *quota )
++{
++    TRACE( "async %p, quota %p\n", async, quota );
++    return gs_async_get_result( async, gs_GetRemainingQuotaAsync, sizeof(*quota), quota, NULL );
++}
++
++/* 10 */
++static HRESULT WINAPI gs_DeleteContainer( void *iface, struct gs_provider *provider, const char *name )
++{
++    TRACE( "provider %p, name %s\n", provider, debugstr_a( name ) );
++    return gs_delete_container( provider, name );
++}
++
++/* 11 */
++static HRESULT WINAPI gs_DeleteContainerAsync( void *iface, struct gs_provider *provider, const char *name, XAsyncBlock *async )
++{
++    struct gs_async *ctx;
++    TRACE( "provider %p, name %s, async %p\n", provider, debugstr_a( name ), async );
++    if (!(ctx = calloc( 1, sizeof(*ctx) ))) return E_OUTOFMEMORY;
++    ctx->kind = GS_ASYNC_DELETE;
++    ctx->provider = provider;
++    ctx->name = gs_strdup( name );
++    return gs_async_start( ctx, async, gs_DeleteContainerAsync, "XGameSaveDeleteContainerAsync" );
++}
++
++/* 12 */
++static HRESULT WINAPI gs_DeleteContainerResult( void *iface, XAsyncBlock *async )
++{
++    TRACE( "async %p\n", async );
++    return gs_async_get_result( async, gs_DeleteContainerAsync, 0, NULL, NULL );
++}
++
++static BOOL gs_container_exists( const struct gs_provider *provider, const char *name, WCHAR *enc )
++{
++    WCHAR dir[MAX_PATH];
++    DWORD attr;
++    if (!gs_encode_name( name, enc, MAX_PATH ) || !gs_join( dir, provider->root, enc )) return FALSE;
++    attr = GetFileAttributesW( dir );
++    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
++}
++
++/* 13 */
++static HRESULT WINAPI gs_GetContainerInfo( void *iface, struct gs_provider *provider, const char *name,
++                                           void *context, XGameSaveContainerInfoCallback callback )
++{
++    WCHAR enc[MAX_PATH];
++    TRACE( "provider %p, name %s, context %p, callback %p\n", provider, debugstr_a( name ), context, callback );
++    if (!provider || !callback) return E_INVALIDARG;
++    AcquireSRWLockShared( &gs_lock );
++    if (gs_container_exists( provider, name, enc )) gs_report_container( provider, enc, callback, context );
++    ReleaseSRWLockShared( &gs_lock );
++    return S_OK;
++}
++
++/* 14 */
++static HRESULT WINAPI gs_EnumerateContainerInfo( void *iface, struct gs_provider *provider, void *context,
++                                                 XGameSaveContainerInfoCallback callback )
++{
++    TRACE( "provider %p, context %p, callback %p\n", provider, context, callback );
++    return gs_enumerate_containers( provider, NULL, context, callback );
++}
++
++/* 15 */
++static HRESULT WINAPI gs_EnumerateContainerInfoByName( void *iface, struct gs_provider *provider, const char *prefix,
++                                                       void *context, XGameSaveContainerInfoCallback callback )
++{
++    TRACE( "provider %p, prefix %s, context %p, callback %p\n", provider, debugstr_a( prefix ), context, callback );
++    return gs_enumerate_containers( provider, prefix, context, callback );
++}
++
++/* 16 */
++static HRESULT WINAPI gs_CreateContainer( void *iface, struct gs_provider *provider, const char *name, struct gs_container **out )
++{
++    struct gs_container *container;
++    WCHAR enc[MAX_PATH];
++
++    TRACE( "provider %p, name %s, container %p\n", provider, debugstr_a( name ), out );
++    if (!provider || !out) return E_INVALIDARG;
++    *out = NULL;
++    if (!name || !*name || strlen( name ) > 255 || !gs_encode_name( name, enc, ARRAY_SIZE(enc) ))
++        return E_GS_INVALID_CONTAINER_NAME;
++    if (!(container = calloc( 1, sizeof(*container) ))) return E_OUTOFMEMORY;
++    container->provider = provider;
++    if (!(container->name = gs_strdup( name )) || !gs_join( container->dir, provider->root, enc ))
++    {
++        free( container->name );
++        free( container );
++        return E_GS_INVALID_CONTAINER_NAME;
++    }
++    /* Like the real service, the container appears on disk with its first update. */
++    *out = container;
++    return S_OK;
++}
++
++/* 17 */
++static void WINAPI gs_CloseContainer( void *iface, struct gs_container *container )
++{
++    TRACE( "container %p\n", container );
++    if (!container) return;
++    free( container->name );
++    free( container );
++}
++
++struct gs_blob_enum
++{
++    const char *prefix;
++    void *context;
++    XGameSaveBlobInfoCallback callback;
++};
++
++static BOOL gs_report_blob( const char *name, const WIN32_FIND_DATAW *fd, void *ctx )
++{
++    struct gs_blob_enum *e = ctx;
++    XGameSaveBlobInfo info;
++
++    if (e->prefix && strncmp( name, e->prefix, strlen( e->prefix ) )) return TRUE;
++    info.name = name;
++    info.size = fd->nFileSizeLow;
++    return e->callback( &info, e->context );
++}
++
++static HRESULT gs_enumerate_blobs( struct gs_container *container, const char *prefix, void *context,
++                                   XGameSaveBlobInfoCallback callback )
++{
++    struct gs_blob_enum e = { prefix, context, callback };
++    if (!container || !callback) return E_INVALIDARG;
++    AcquireSRWLockShared( &gs_lock );
++    gs_for_each_blob( container->dir, gs_report_blob, &e );
++    ReleaseSRWLockShared( &gs_lock );
++    return S_OK;
++}
++
++/* 18 */
++static HRESULT WINAPI gs_EnumerateBlobInfo( void *iface, struct gs_container *container, void *context,
++                                            XGameSaveBlobInfoCallback callback )
++{
++    TRACE( "container %p, context %p, callback %p\n", container, context, callback );
++    return gs_enumerate_blobs( container, NULL, context, callback );
++}
++
++/* 19 */
++static HRESULT WINAPI gs_EnumerateBlobInfoByName( void *iface, struct gs_container *container, const char *prefix,
++                                                  void *context, XGameSaveBlobInfoCallback callback )
++{
++    TRACE( "container %p, prefix %s, context %p, callback %p\n", container, debugstr_a( prefix ), context, callback );
++    return gs_enumerate_blobs( container, prefix, context, callback );
++}
++
++/* 20 */
++static HRESULT WINAPI gs_ReadBlobData( void *iface, struct gs_container *container, const char **names,
++                                       UINT32 *count, SIZE_T size, XGameSaveBlob *blobs )
++{
++    struct gs_staged_blob *staged;
++    UINT32 staged_count;
++    SIZE_T required;
++    HRESULT hr;
++
++    TRACE( "container %p, names %p, count %p, size %Iu, blobs %p\n", container, names, count, size, blobs );
++    if (!count) return E_INVALIDARG;
++    if (FAILED( hr = gs_stage_blobs( container, names, *count, &staged, &staged_count, &required ) )) return hr;
++    if (size < required) hr = E_GS_PROVIDED_BUFFER_TOO_SMALL;
++    else if (SUCCEEDED( hr = gs_layout_blobs( staged, staged_count, size, blobs ) )) *count = staged_count;
++    gs_free_staged( staged, staged_count );
++    return hr;
++}
++
++/* 21 */
++static HRESULT WINAPI gs_ReadBlobDataAsync( void *iface, struct gs_container *container, const char **names,
++                                            UINT32 count, XAsyncBlock *async )
++{
++    struct gs_async *ctx;
++    UINT32 i;
++
++    TRACE( "container %p, names %p, count %u, async %p\n", container, names, count, async );
++    if (!container) return E_INVALIDARG;
++    if (!(ctx = calloc( 1, sizeof(*ctx) ))) return E_OUTOFMEMORY;
++    ctx->kind = GS_ASYNC_READ;
++    ctx->container = container;
++    if (names && count)
++    {
++        if (!(ctx->names = calloc( count, sizeof(*ctx->names) )))
++        {
++            free( ctx );
++            return E_OUTOFMEMORY;
++        }
++        for (i = 0; i < count; i++)
++        {
++            TRACE( "  blob %s\n", debugstr_a( names[i] ) );
++            ctx->names[i] = gs_strdup( names[i] );
++        }
++        ctx->name_count = count;
++    }
++    return gs_async_start( ctx, async, gs_ReadBlobDataAsync, "XGameSaveReadBlobDataAsync" );
++}
++
++/* 22 */
++static HRESULT WINAPI gs_ReadBlobDataResult( void *iface, XAsyncBlock *async, SIZE_T size, XGameSaveBlob *blobs, UINT32 *count )
++{
++    HRESULT hr;
++
++    TRACE( "async %p, size %Iu, blobs %p, count %p\n", async, size, blobs, count );
++    hr = gs_async_get_result( async, gs_ReadBlobDataAsync, size, blobs, NULL );
++    if (count) *count = SUCCEEDED( hr ) ? gs_count_laid_out_blobs( blobs, size ) : 0;
++    return hr;
++}
++
++/* 23 */
++static HRESULT WINAPI gs_CreateUpdate( void *iface, struct gs_container *container, const char *display_name, struct gs_update **out )
++{
++    struct gs_update *update;
++
++    TRACE( "container %p, display name %s, update %p\n", container, debugstr_a( display_name ), out );
++    if (!container || !out) return E_INVALIDARG;
++    if (!(update = calloc( 1, sizeof(*update) ))) return E_OUTOFMEMORY;
++    update->container = container;
++    update->display_name = display_name ? gs_strdup( display_name ) : NULL;
++    *out = update;
++    return S_OK;
++}
++
++/* 24 */
++static void WINAPI gs_CloseUpdate( void *iface, struct gs_update *update )
++{
++    UINT32 i;
++    TRACE( "update %p\n", update );
++    if (!update) return;
++    for (i = 0; i < update->count; i++)
++    {
++        free( update->ops[i].name );
++        free( update->ops[i].data );
++    }
++    free( update->ops );
++    free( update->display_name );
++    free( update );
++}
++
++static HRESULT gs_add_op( struct gs_update *update, const char *name, const BYTE *data, UINT32 size, BOOLEAN remove )
++{
++    struct gs_update_op *op;
++    WCHAR enc[MAX_PATH];
++
++    if (!update || !name || !*name || !gs_encode_name( name, enc, ARRAY_SIZE(enc) )) return E_INVALIDARG;
++    if (size > GS_MAX_BLOB_SIZE) return E_GS_UPDATE_TOO_BIG;
++    if (update->count == update->capacity)
++    {
++        UINT32 capacity = update->capacity ? update->capacity * 2 : 8;
++        if (!(op = realloc( update->ops, capacity * sizeof(*op) ))) return E_OUTOFMEMORY;
++        update->ops = op;
++        update->capacity = capacity;
++    }
++    op = &update->ops[update->count];
++    memset( op, 0, sizeof(*op) );
++    if (!(op->name = gs_strdup( name ))) return E_OUTOFMEMORY;
++    if (size && !(op->data = malloc( size )))
++    {
++        free( op->name );
++        return E_OUTOFMEMORY;
++    }
++    if (size) memcpy( op->data, data, size );
++    op->size = size;
++    op->remove = remove;
++    update->count++;
++    return S_OK;
++}
++
++/* 25 */
++static HRESULT WINAPI gs_SubmitBlobWrite( void *iface, struct gs_update *update, const char *name, const BYTE *data, SIZE_T size )
++{
++    TRACE( "update %p, name %s, data %p, size %Iu\n", update, debugstr_a( name ), data, size );
++    if (size && !data) return E_INVALIDARG;
++    if (size > GS_MAX_BLOB_SIZE) return E_GS_UPDATE_TOO_BIG;
++    return gs_add_op( update, name, data, (UINT32)size, FALSE );
++}
++
++/* 26 */
++static HRESULT WINAPI gs_SubmitBlobDelete( void *iface, struct gs_update *update, const char *name )
++{
++    TRACE( "update %p, name %s\n", update, debugstr_a( name ) );
++    return gs_add_op( update, name, NULL, 0, TRUE );
++}
++
++/* 27 */
++static HRESULT WINAPI gs_SubmitUpdate( void *iface, struct gs_update *update )
++{
++    TRACE( "update %p\n", update );
++    return gs_submit_update( update );
++}
++
++/* 28 */
++static HRESULT WINAPI gs_SubmitUpdateAsync( void *iface, struct gs_update *update, XAsyncBlock *async )
++{
++    struct gs_async *ctx;
++    TRACE( "update %p, async %p\n", update, async );
++    if (!update) return E_INVALIDARG;
++    if (!(ctx = calloc( 1, sizeof(*ctx) ))) return E_OUTOFMEMORY;
++    ctx->kind = GS_ASYNC_SUBMIT;
++    ctx->update = update;
++    return gs_async_start( ctx, async, gs_SubmitUpdateAsync, "XGameSaveSubmitUpdateAsync" );
++}
++
++/* 29 */
++static HRESULT WINAPI gs_SubmitUpdateResult( void *iface, XAsyncBlock *async )
++{
++    TRACE( "async %p\n", async );
++    return gs_async_get_result( async, gs_SubmitUpdateAsync, 0, NULL, NULL );
++}
++
++static const void *gamesave_vtable[] =
++{
++    gs_QueryInterface,
++    gs_AddRef,
++    gs_Release,
++    gs_InitializeProvider,              /* 3 */
++    gs_InitializeProviderAsync,
++    gs_InitializeProviderResult,
++    gs_CloseProvider,
++    gs_GetRemainingQuota,               /* 7 */
++    gs_GetRemainingQuotaAsync,
++    gs_GetRemainingQuotaResult,
++    gs_DeleteContainer,                 /* 10 */
++    gs_DeleteContainerAsync,
++    gs_DeleteContainerResult,
++    gs_GetContainerInfo,                /* 13 */
++    gs_EnumerateContainerInfo,
++    gs_EnumerateContainerInfoByName,
++    gs_CreateContainer,                 /* 16 */
++    gs_CloseContainer,
++    gs_EnumerateBlobInfo,               /* 18 */
++    gs_EnumerateBlobInfoByName,
++    gs_ReadBlobData,                    /* 20 */
++    gs_ReadBlobDataAsync,
++    gs_ReadBlobDataResult,
++    gs_CreateUpdate,                    /* 23 */
++    gs_CloseUpdate,
++    gs_SubmitBlobWrite,                 /* 25 */
++    gs_SubmitBlobDelete,
++    gs_SubmitUpdate,                    /* 27 */
++    gs_SubmitUpdateAsync,
++    gs_SubmitUpdateResult,
++};
++
++static struct { const void **vtbl; } gamesave_instance = { gamesave_vtable };
++
++void *x_game_save_composite_get(void)
++{
++    TRACE( "returning XGameSave composite %p\n", &gamesave_instance );
++    return &gamesave_instance;
++}
+diff --git a/dlls/xgameruntime/Makefile.in b/dlls/xgameruntime/Makefile.in
+index 6613fcf..ec58a13 100644
+--- a/dlls/xgameruntime/Makefile.in
++++ b/dlls/xgameruntime/Makefile.in
+@@ -23,4 +23,5 @@ SOURCES = \
+ 	GDKComponent/System/User/XUser.c \
+ 	GDKComponent/System/User/DeviceAuth.c \
+ 	GDKComponent/System/XStore.c \
++	GDKComponent/System/XGameSave.c \
+ 	GDKComponent/System/XServiceBroker.c
+diff --git a/dlls/xgameruntime/main.c b/dlls/xgameruntime/main.c
+index b250352..845c92c 100644
+--- a/dlls/xgameruntime/main.c
++++ b/dlls/xgameruntime/main.c
+@@ -408,6 +408,14 @@ HRESULT WINAPI QueryApiImpl( const GUID *runtimeClassId, REFIID interfaceId, voi
+         if (store) { *out = store; return S_OK; }
+     }
+ 
++    /* {704c3f58} XGameSave, kept on local disk */
++    if ( runtimeClassId->Data1 == 0x704c3f58 )
++    {
++        extern void *x_game_save_composite_get(void);
++        void *gamesave = x_game_save_composite_get();
++        if (gamesave) { *out = gamesave; return S_OK; }
++    }
++
+     /* {af406016} composite service broker */
+     if ( runtimeClassId->Data1 == 0xaf406016 )
+     {
+diff --git a/include/xgameerr.h b/include/xgameerr.h
+index 337a8f5..edee2ec 100644
+--- a/include/xgameerr.h
++++ b/include/xgameerr.h
+@@ -73,6 +73,21 @@
+ #define E_GAMEPACKAGE_CONFIG_PROTOCOL_REQUIRES_EXECUTABLE           _HRESULT_TYPEDEF_(0x89245211L)
+ #define E_GAMESTORE_LICENSE_ACTION_NOT_APPLICABLE_TO_PRODUCT        _HRESULT_TYPEDEF_(0x89245300L)
+ #define E_GAMESTORE_NETWORK_ERROR                                   _HRESULT_TYPEDEF_(0x89245301L)
++#define E_GS_INVALID_CONTAINER_NAME                                 _HRESULT_TYPEDEF_(0x80830001L)
++#define E_GS_NO_ACCESS                                              _HRESULT_TYPEDEF_(0x80830002L)
++#define E_GS_OUT_OF_LOCAL_STORAGE                                   _HRESULT_TYPEDEF_(0x80830003L)
++#define E_GS_USER_CANCELED                                          _HRESULT_TYPEDEF_(0x80830004L)
++#define E_GS_UPDATE_TOO_BIG                                         _HRESULT_TYPEDEF_(0x80830005L)
++#define E_GS_QUOTA_EXCEEDED                                         _HRESULT_TYPEDEF_(0x80830006L)
++#define E_GS_PROVIDED_BUFFER_TOO_SMALL                              _HRESULT_TYPEDEF_(0x80830007L)
++#define E_GS_BLOB_NOT_FOUND                                         _HRESULT_TYPEDEF_(0x80830008L)
++#define E_GS_NO_SERVICE_CONFIGURATION                               _HRESULT_TYPEDEF_(0x80830009L)
++#define E_GS_CONTAINER_NOT_IN_SYNC                                  _HRESULT_TYPEDEF_(0x8083000AL)
++#define E_GS_CONTAINER_SYNC_FAILED                                  _HRESULT_TYPEDEF_(0x8083000BL)
++#define E_GS_USER_NOT_REGISTERED_IN_SERVICE                         _HRESULT_TYPEDEF_(0x8083000CL)
++#define E_GS_HANDLE_EXPIRED                                         _HRESULT_TYPEDEF_(0x8083000DL)
++#define E_GS_ASYNC_FUNCTION_REQUIRED                                _HRESULT_TYPEDEF_(0x8083000EL)
++#define E_GS_PROVIDER_MISMATCH                                      _HRESULT_TYPEDEF_(0x8083000FL)
+ #define E_GAMESTORE_SERVER_ERROR                                    _HRESULT_TYPEDEF_(0x89245302L)
+ #define E_GAMESTORE_INSUFFICIENT_QUANTITY                           _HRESULT_TYPEDEF_(0x89245303L)
+ #define E_GAMESTORE_ALREADY_PURCHASED                               _HRESULT_TYPEDEF_(0x89245304L)
+-- 
+2.56.0
+

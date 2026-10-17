@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "legends-on-linux"
+version = "0.1.0"
+description = "Download and play Minecraft Legends (Windows edition) on Linux"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = ["cryptography>=41"]
+
+[project.scripts]
+legends-on-linux = "legends_on_linux.cli:main"
+
+[tool.setuptools]
+packages = ["legends_on_linux"]
