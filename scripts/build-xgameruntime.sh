@@ -72,4 +72,5 @@ make -j"$jobs" dlls/xgameruntime/x86_64-windows/xgameruntime.dll > make.log 2>&1
 mkdir -p "$data/engine-overlay"
 install -m 644 dlls/xgameruntime/x86_64-windows/xgameruntime.dll "$data/engine-overlay/"
 echo ":: built $data/engine-overlay/xgameruntime.dll"
+echo ":: install it with:  LOL_XGAMERUNTIME_DLL=$data/engine-overlay/xgameruntime.dll legends-on-linux setup"
 sha256sum "$data/engine-overlay/xgameruntime.dll"

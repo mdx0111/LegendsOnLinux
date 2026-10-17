@@ -116,9 +116,8 @@ def cmd_status(args):
     engine = (C.ENGINE / "proton").is_file()
     line("Game engine", C.ENGINE_REV if engine else "not installed (legends-on-linux setup)", engine)
     patched = deps.xgameruntime_installed()
-    line("Legends xgameruntime.dll", "installed" if patched else
-         ("built, not installed yet" if deps.built_xgameruntime() else
-          "missing (scripts/build-xgameruntime.sh)"), patched)
+    line("Legends engine patch", C.XGAMERUNTIME_REV if patched else
+         "not installed yet (legends-on-linux setup)", patched)
     line("xodus-cli", C.XODUS_REV if deps.xodus_bin().is_file() else "not installed",
          deps.xodus_bin().is_file())
     has_prefix = (C.PFX / "system.reg").is_file()

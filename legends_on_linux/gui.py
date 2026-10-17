@@ -567,22 +567,24 @@ class MainWindow(QMainWindow):
 # ---------------------------------------------------------------- core glue
 
 def setup():
-    """Download what is missing; build the engine patch if needed and possible."""
-    if deps.built_xgameruntime() is None:
-        deps.ensure_umu()
-        deps.ensure_xodus()
-        deps.ensure_xcurl_set()
-        try:
-            deps.ensure_engine()
-        except LolError:
-            build_xgameruntime()
-    deps.ensure_all()
+    """Download what is missing and create the Wine prefix.
+
+    If the published engine patch cannot be downloaded and no local build
+    exists, build one when the tools for it are there.
+    """
+    try:
+        deps.ensure_all()
+    except LolError:
+        if deps.pinned_xgameruntime().is_file() or deps.local_xgameruntime():
+            raise
+        build_xgameruntime()
+        deps.ensure_all()
     prefix.ensure_prefix()
     util.ok("Engine and Wine prefix are ready")
 
 
 def start_game(debug):
-    if deps.built_xgameruntime() is None:
+    if not deps.xgameruntime_installed() or not (C.PFX / ".lol-ready").is_file():
         setup()
     return launch.start(debug=debug)
 

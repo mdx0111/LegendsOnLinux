@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 
 from . import config as C
-from .util import LolError, download, info, ok, replace_dir, safe_extract, sha256_file
+from .util import LolError, download, info, ok, replace_dir, safe_extract, sha256_file, warn
 
 PROJECT = Path(__file__).resolve().parent.parent
 
@@ -108,15 +108,42 @@ def native5_patch_dir(root: Path = C.ENGINE):
     return root / "files/share/bedrock-on-linux/licenses-and-provenance/winegdk/native5"
 
 
-def built_xgameruntime():
-    """Our xgameruntime.dll: an explicit path, a local build, or nothing."""
-    candidates = [os.environ.get("LOL_XGAMERUNTIME_DLL"),
-                  C.ENGINE_OVERLAY / C.XGAMERUNTIME,
-                  PROJECT / "build" / C.XGAMERUNTIME]
-    for candidate in candidates:
+def local_xgameruntime():
+    """A development build, when one is asked for or has been made."""
+    for candidate in (os.environ.get("LOL_XGAMERUNTIME_DLL"),
+                      C.ENGINE_OVERLAY / C.XGAMERUNTIME,
+                      PROJECT / "build" / C.XGAMERUNTIME):
         if candidate and Path(candidate).is_file():
             return Path(candidate)
     return None
+
+
+def pinned_xgameruntime():
+    return C.ENGINE_OVERLAY / C.XGAMERUNTIME_ASSET
+
+
+def xgameruntime_dll():
+    """The xgameruntime.dll to install into the engine.
+
+    LOL_XGAMERUNTIME_DLL wins; otherwise the published, SHA-256-pinned build
+    is downloaded. A local build (scripts/build-xgameruntime.sh) is used only
+    when that download is not possible.
+    """
+    override = os.environ.get("LOL_XGAMERUNTIME_DLL")
+    if override:
+        if not Path(override).is_file():
+            raise LolError(f"LOL_XGAMERUNTIME_DLL does not exist: {override}")
+        return Path(override)
+    try:
+        return download(C.XGAMERUNTIME_URL, pinned_xgameruntime(),
+                        f"Legends engine patch ({C.XGAMERUNTIME_REV})", C.XGAMERUNTIME_SHA256)
+    except LolError as exc:
+        local = local_xgameruntime()
+        if local:
+            warn(f"{exc}. Using the local build {local} instead.")
+            return local
+        raise LolError(f"{exc}\nYou can also build it yourself with "
+                       "scripts/build-xgameruntime.sh.") from exc
 
 
 def ensure_engine():
@@ -143,23 +170,25 @@ def ensure_engine():
 
 
 def xgameruntime_installed():
-    dll = built_xgameruntime()
+    """Whether the engine carries the Legends xgameruntime.dll (no network)."""
     target = engine_dll_target()
-    return bool(dll and target.is_file() and sha256_file(dll) == sha256_file(target))
+    if not target.is_file():
+        return False
+    installed = sha256_file(target)
+    override = os.environ.get("LOL_XGAMERUNTIME_DLL")
+    if override and Path(override).is_file():
+        return installed == sha256_file(Path(override))
+    local = local_xgameruntime()
+    return installed == C.XGAMERUNTIME_SHA256 or bool(local and installed == sha256_file(local))
 
 
 def install_xgameruntime():
-    dll = built_xgameruntime()
-    if not dll:
-        raise LolError(
-            "The Legends build of xgameruntime.dll is missing. Build it once with\n"
-            "    scripts/build-xgameruntime.sh\n"
-            "(needs git, gcc, mingw64-gcc, flex, bison and make).")
+    dll = xgameruntime_dll()
     target = engine_dll_target()
     if target.is_file() and sha256_file(dll) == sha256_file(target):
         return target
     shutil.copy2(dll, target)
-    ok(f"Engine patched with {dll}")
+    ok(f"Engine patched with the Legends xgameruntime.dll ({dll.name})")
     return target
 
 

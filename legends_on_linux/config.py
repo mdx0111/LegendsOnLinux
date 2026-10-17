@@ -50,8 +50,15 @@ ENGINE_URL = ("https://github.com/Wyze3306/BedrockOnLinux/releases/download/"
 ENGINE_SHA256 = "2f30533b249954438bf6b425631539c8d8036261ce25cffa0d1ea5d30f1d3e27"
 WINEGDK_REPO = "https://github.com/Weather-OS/WineGDK.git"
 WINEGDK_COMMIT = "75637b674e1f191e65753663c4c0c32bea05ba6e"
-# Our xgameruntime.dll is built by scripts/build-xgameruntime.sh.
 XGAMERUNTIME = "xgameruntime.dll"
+# Our xgameruntime.dll: WINEGDK_COMMIT + BoL's native5 patches + engine/patches,
+# built by scripts/build-xgameruntime.sh and published as a release of this
+# repository. A new build gets a new rev; published bytes are never replaced.
+XGAMERUNTIME_REV = "legends-1"
+XGAMERUNTIME_ASSET = f"xgameruntime-{XGAMERUNTIME_REV}.dll"
+XGAMERUNTIME_URL = ("https://github.com/mdx0111/LegendsOnLinux/releases/download/"
+                    f"xgameruntime-{XGAMERUNTIME_REV}/{XGAMERUNTIME_ASSET}")
+XGAMERUNTIME_SHA256 = "9eda926e5718aa6f914908eaf696eb4c82c71766e3f9e55d2a64952442e4147d"
 
 # --- umu-launcher (Steam Linux Runtime) --------------------------------------
 UMU_VERSION = "1.4.3"

@@ -31,7 +31,7 @@ Legends needs on top of it:
 | Ownership, licence, download | [xodus-cli](https://github.com/xodus-gaming/xodus) signs in as a Windows Store device and streams the package from the Xbox CDN. |
 | Decryption | The game's executable stays encrypted on disk, as on Windows. `xodus-cli run` decrypts it into memory at every launch. |
 | Xbox Live in the game | A Microsoft device-code sign-in. The launcher builds the Xbox Live token chain itself and hands it to WineGDK. |
-| Engine | [BedrockOnLinux](https://github.com/Wyze3306/BedrockOnLinux)'s published WineGDK build, with `xgameruntime.dll` rebuilt from the same source plus `engine/patches/`. |
+| Engine | [BedrockOnLinux](https://github.com/Wyze3306/BedrockOnLinux)'s published WineGDK build, with `xgameruntime.dll` replaced by our build of the same source plus `engine/patches/` (published as a [release](https://github.com/mdx0111/LegendsOnLinux/releases/tag/xgameruntime-legends-1) of this repository). |
 | Network | The game's `XCurl.dll` is swapped for an OpenSSL build, because Azure drops Wine's TLS. |
 
 All downloaded components are pinned by SHA-256 in
@@ -42,9 +42,11 @@ All downloaded components are pinned by SHA-256 in
 - x86-64 Linux with a Vulkan GPU driver
 - Python ≥ 3.10 with `cryptography`, and `PySide6` for the launcher window
 - `libwebkit2gtk-4.1` (for the Microsoft Store sign-in window)
-- To build the engine patch: `git gcc make flex bison` and `x86_64-w64-mingw32-gcc`.
-  On Fedora: `sudo dnf install git gcc make flex bison mingw64-gcc python3-cryptography python3-pyside6 webkit2gtk4.1`
 - About 13 GB of disk space for the game, plus about 3 GB for the engine and runtime
+
+On Fedora: `sudo dnf install python3-cryptography python3-pyside6 webkit2gtk4.1`
+On Debian/Ubuntu: `sudo apt install python3-cryptography python3-pyside6.qtwidgets libwebkit2gtk-4.1-0`
+(or `pip install PySide6` where the distribution has no PySide6 package)
 
 ## Getting started
 
@@ -59,17 +61,14 @@ cd LegendsOnLinux
 
 In the window, sign in to the **Microsoft Store** and **Xbox Live**, press
 **Install** (or **Change…** to pick a folder you already downloaded the game
-into), then **PLAY**. The first play sets up the engine and Wine prefix, and
-builds the engine patch if it is missing (see Requirements). The ⋮ menu opens
-the game, saves and log folders, and turns on debug logging.
+into), then **PLAY**. The first play downloads the engine (about 820 MB) and
+the Steam Linux Runtime (about 900 MB), and creates the Wine prefix. The ⋮ menu
+opens the game, saves and log folders, and turns on debug logging.
 
 ### Command line
 
 ```sh
 ./legends-on-linux setup              # engine, umu, xodus-cli, Wine prefix
-scripts/build-xgameruntime.sh         # build the Legends xgameruntime.dll (~1 min)
-./legends-on-linux setup              # install it into the engine
-
 ./legends-on-linux login              # Store sign-in window, then an Xbox Live code
 ./legends-on-linux install            # download the game (~12 GB)
 ./legends-on-linux play
@@ -106,8 +105,27 @@ Everything lives under `~/.local/share/legends-on-linux` (override with
 | `prefix/pfx/drive_c/users/steamuser/AppData/Local/WineGDK/XGameSave/` | your saves |
 | `account/` | Xbox Live sign-in (refresh token, device key, preauth) |
 | `xodus-home/` | the Microsoft Store sign-in (xodus-cli keyring) |
-| `engine/`, `engine-overlay/`, `umu/`, `xodus/`, `xcurl/` | runtime components |
+| `engine/`, `umu/`, `xodus/`, `xcurl/` | runtime components |
+| `engine-overlay/` | the Legends `xgameruntime.dll` (downloaded, or a local build) |
 | `logs/` | logs (`play --debug` adds Proton and HTTP logs) |
+
+## Building the engine patch yourself
+
+The launcher downloads a prebuilt, SHA-256-pinned `xgameruntime.dll`. To
+build it from source instead (for development, or to check the published
+one):
+
+```sh
+# Fedora: sudo dnf install git gcc make flex bison mingw64-gcc
+./legends-on-linux setup                 # the build takes BoL's patches from the engine
+scripts/build-xgameruntime.sh            # ~1 minute; writes engine-overlay/xgameruntime.dll
+LOL_XGAMERUNTIME_DLL=~/.local/share/legends-on-linux/engine-overlay/xgameruntime.dll \
+    ./legends-on-linux setup             # install your build instead of the published one
+```
+
+A local build is also used automatically when the published one cannot be
+downloaded. Wine embeds a build timestamp, so a rebuild has the same code but
+a different hash from the release.
 
 ## Troubleshooting
 
