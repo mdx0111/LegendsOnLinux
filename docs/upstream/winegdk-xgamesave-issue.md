@@ -154,8 +154,8 @@ accepts.
 ## Reference implementation
 
 A working C implementation (about 1,180 lines) is in
-`engine/patches/0002-xgameruntime-Implement-XGameSave-on-local-storage.patch`
-of https://github.com/mdx0111/LegendsOnLinux. It applies to commit
+[`0002-xgameruntime-Implement-XGameSave-on-local-storage.patch`](https://github.com/mdx0111/LegendsOnLinux/blob/main/engine/patches/0002-xgameruntime-Implement-XGameSave-on-local-storage.patch)
+of [LegendsOnLinux](https://github.com/mdx0111/LegendsOnLinux). It applies to commit
 `75637b6` plus BedrockOnLinux's native5 patches, not to current `master`, and
 it hooks into `QueryApiImpl` the way that tree's XStore stub does. The design:
 
