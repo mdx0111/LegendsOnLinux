@@ -7,6 +7,8 @@ Microsoft's own servers (only if your account owns it), and runs it with a
 patched [WineGDK](https://github.com/Weather-OS/WineGDK) engine. It also signs
 the game in to Xbox Live.
 
+![The LegendsOnLinux launcher window](docs/images/launcher.png)
+
 > **Status: early.** The game reaches the main menu, signs in to Xbox Live
 > and saves locally. Online multiplayer is untested. Saves stay on this PC and
 > do **not** sync with your Xbox/Windows cloud saves.
