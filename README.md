@@ -54,16 +54,16 @@ On Debian/Ubuntu: `sudo apt install python3-cryptography python3-pyside6.qtwidge
 
 ### Fedora (.rpm)
 
-Build the package and install it (it pulls in its dependencies):
+Download the `.noarch.rpm` from the
+[latest release](https://github.com/mdx0111/LegendsOnLinux/releases/latest)
+and install it (dnf pulls in its dependencies):
 
 ```sh
-git clone https://github.com/mdx0111/LegendsOnLinux.git
-cd LegendsOnLinux
-scripts/build-rpm.sh                  # needs: sudo dnf install rpm-build
-sudo dnf install ./dist/legends-on-linux-*.noarch.rpm
+sudo dnf install ./legends-on-linux-*.noarch.rpm
 ```
 
 Then start **LegendsOnLinux** from the application menu, or run `legends-on-linux`.
+To build the package yourself: `scripts/build-rpm.sh` (needs `rpm-build`).
 
 ### Launcher window (from a checkout)
 
