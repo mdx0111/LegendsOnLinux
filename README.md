@@ -80,6 +80,30 @@ because Ubuntu's LTS releases do not package it. To build it yourself:
 `scripts/build-deb.sh` (uses a Debian container through podman or docker when
 `dpkg-deb` is not installed).
 
+### Flatpak (any distribution)
+
+Download `LegendsOnLinux-*-x86_64.flatpak` from the
+[latest release](https://github.com/mdx0111/LegendsOnLinux/releases/latest)
+and install it for your user (it pulls in the GNOME 51 runtime from Flathub):
+
+```sh
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak install --user ./LegendsOnLinux-*-x86_64.flatpak
+flatpak run io.github.mdx0111.LegendsOnLinux
+```
+
+The Flatpak keeps its data in the same `~/.local/share/legends-on-linux` as
+the .deb and .rpm, so switching formats keeps your sign-ins, game and saves.
+It can see your home folder. For a game folder outside it, allow that folder
+once:
+
+```sh
+flatpak override --user --filesystem=/path/to/games io.github.mdx0111.LegendsOnLinux
+```
+
+To build it yourself: `scripts/build-flatpak.sh` (needs `org.flatpak.Builder`
+and the GNOME 51 SDK from Flathub; see the script).
+
 ### Launcher window (from a checkout)
 
 ```sh

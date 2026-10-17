@@ -16,3 +16,6 @@ xcurl.log
 .idea/
 *.swp
 .DS_Store
+
+# Flatpak build state
+.flatpak-build/

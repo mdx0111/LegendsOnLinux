@@ -359,7 +359,11 @@ class MainWindow(QMainWindow):
         self.xbox_row.button.setText("Sign out" if xbox else "Sign in")
 
         self.game_row.description.setText(str(directory))
-        self.game_row.set_status("Installed" if installed else "Not installed", installed)
+        blocked = launch.sandbox_blocks(directory)
+        self.game_row.set_status("Installed" if installed else
+                                 ("Not visible to the Flatpak" if blocked else "Not installed"),
+                                 installed)
+        self.game_row.status.setToolTip(f"Run:  {blocked}" if blocked else "")
         self.game_row.button.setText("Update" if installed else "Install")
         self._update_buttons()
 
@@ -503,9 +507,15 @@ class MainWindow(QMainWindow):
                   after=self.refresh, cancel=store.cancel)
 
     def _change_folder(self):
+        # In the Flatpak, the desktop's dialog answers through the document
+        # portal with /run/user/.../doc paths that Wine and the Steam Runtime
+        # container cannot use; Qt's own dialog returns the real path.
+        options = QFileDialog.ShowDirsOnly
+        if C.FLATPAK:
+            options |= QFileDialog.DontUseNativeDialog
         chosen = QFileDialog.getExistingDirectory(
             self, "Choose the game folder (an existing download, or where to install)",
-            str(launch.game_dir().parent))
+            str(launch.game_dir().parent), options)
         if not chosen:
             return
         directory = Path(chosen)

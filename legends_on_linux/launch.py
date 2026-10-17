@@ -17,6 +17,24 @@ def game_dir():
     return Path(configured).expanduser() if configured else C.DEFAULT_GAME_DIR
 
 
+def sandbox_blocks(directory: Path):
+    """The flatpak override that would let the Flatpak see ``directory``, or None."""
+    if not C.FLATPAK or directory.exists():
+        return None
+    outside = directory
+    while not outside.parent.exists() and outside.parent != outside:
+        outside = outside.parent
+    return f"flatpak override --user --filesystem={outside} {C.APP_ID}"
+
+
+def not_installed_message(directory: Path):
+    override = sandbox_blocks(directory)
+    if override:
+        return (f"The Flatpak cannot see {directory}. Allow it once with:\n    {override}\n"
+                "then start the launcher again.")
+    return f"Minecraft Legends is not installed in {directory}. Run:  legends-on-linux install"
+
+
 def install_xcurl(directory: Path):
     """Route the game's HTTP over OpenSSL instead of Wine's Schannel.
 
@@ -50,8 +68,7 @@ def build(offline=False, debug=False):
     """Prepare everything and return (argv, environment) for the game."""
     directory = game_dir()
     if not store.installed(directory):
-        raise LolError(f"Minecraft Legends is not installed in {directory}. "
-                       "Run:  legends-on-linux install")
+        raise LolError(not_installed_message(directory))
     deps.ensure_all()
     prefix.require_prefix_idle(C.PFX, "start the game")
     prefix.ensure_prefix()

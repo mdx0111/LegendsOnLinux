@@ -14,10 +14,14 @@ VERSION = "0.1.1"
 ASSETS = Path(__file__).resolve().parent.parent / "data"
 
 HOME = Path.home()
-DATA = Path(
-    os.environ.get("LOL_HOME")
-    or Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local" / "share") / APP
-).expanduser()
+# Inside the Flatpak, XDG_DATA_HOME points into ~/.var/app; the launcher keeps
+# using ~/.local/share/legends-on-linux (the manifest grants it) so the rpm,
+# deb and Flatpak share one sign-in, game and set of saves. A second Store
+# sign-in would register another device, and an account may only have ten.
+FLATPAK = bool(os.environ.get("FLATPAK_ID")) or Path("/.flatpak-info").is_file()
+_DATA_ROOT = (HOME / ".local" / "share" if FLATPAK else
+              Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local" / "share"))
+DATA = Path(os.environ.get("LOL_HOME") or _DATA_ROOT / APP).expanduser()
 
 CACHE = DATA / "cache"
 LOGS = DATA / "logs"

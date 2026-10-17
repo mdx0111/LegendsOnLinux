@@ -115,7 +115,10 @@ def cmd_status(args):
     line("Xbox Live account", "linked" if auth.signed_in() else "not linked "
          "(legends-on-linux login --xbox)", auth.signed_in())
     installed = store.installed(directory)
-    line("Game", str(directory) if installed else f"not installed in {directory}", installed)
+    blocked = launch.sandbox_blocks(directory)
+    line("Game", str(directory) if installed else
+         (f"not visible to the Flatpak: {blocked}" if blocked else f"not installed in {directory}"),
+         installed)
     engine = (C.ENGINE / "proton").is_file()
     line("Game engine", C.ENGINE_REV if engine else "not installed (legends-on-linux setup)", engine)
     patched = deps.xgameruntime_installed()

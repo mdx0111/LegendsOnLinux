@@ -75,31 +75,7 @@ python3 -m pip install --quiet --root-user-action=ignore --no-cache-dir --no-com
     --implementation cp --abi abi3 --target "$lib/vendor" \
     -r "$tree/third_party/requirements-deb.txt"
 rm -rf "$lib/vendor/bin"
-# Only QtCore, QtGui and QtWidgets are used. QML/Quick, Designer and the
-# translations make up most of the wheel and are dropped.
-pyside=$lib/vendor/PySide6
-rm -rf "$pyside"/{Qt/qml,Qt/translations,designer,assistant,linguist,lupdate,lrelease,qmlformat,qmllint,qmlls,qmlimportscanner,qmltyperegistrar,uic,rcc,examples,include,glue,typesystems,scripts}
-rm -f "$pyside"/{QtQml,QtQuick,QtQuickControls2,QtQuickWidgets,QtDesigner,QtUiTools,QtTest,QtSql,QtNetwork,QtOpenGL,QtOpenGLWidgets,QtXml,QtConcurrent,QtDBus,QtHelp,QtPrintSupport,QtSvg,QtSvgWidgets,QtStateMachine}.*.so \
-      "$pyside"/{QtQml,QtQuick,QtQuickControls2,QtQuickWidgets,QtDesigner,QtUiTools,QtTest,QtSql,QtNetwork,QtOpenGL,QtOpenGLWidgets,QtXml,QtConcurrent,QtDBus,QtHelp,QtPrintSupport,QtSvg,QtSvgWidgets,QtStateMachine}.pyi
-rm -f "$pyside"/Qt/lib/libQt6{Qml,Quick,QmlModels,QmlMeta,QmlWorkerScript,QuickControls2,QuickTemplates2,QuickWidgets,QuickShapes,QuickLayouts,QuickParticles,QuickTest,Designer,DesignerComponents,UiTools,Test,Sql,Help,Svg,SvgWidgets,StateMachine,Xml}*.so*
-# Then drop whatever was left depending on what is gone (Quick add-ons, QML
-# tooling, Designer and SVG plugins ...), until nothing more changes. Only a
-# missing Qt library counts here: a missing system library is a missing
-# Depends, which the check below reports instead.
-qt=$pyside/Qt
-while :; do
-    broken=$(for so in "$qt"/lib/*.so* "$qt"/plugins/*/*.so "$pyside"/*.abi3.so; do
-                 [[ -e "$so" ]] || continue
-                 if ldd "$so" 2>/dev/null | grep -q 'libQt6[^ ]* => not found'; then echo "$so"; fi
-             done)
-    [[ -n "$broken" ]] || break
-    echo "$broken" | xargs rm -f
-done
-find "$qt/plugins" -type d -empty -delete
-for needed in "$pyside"/QtCore.abi3.so "$pyside"/QtGui.abi3.so "$pyside"/QtWidgets.abi3.so \
-              "$qt"/plugins/platforms/libqxcb.so "$qt"/plugins/platforms/libqwayland.so; do
-    [[ -e "$needed" ]] || { echo "pruning removed $needed" >&2; exit 1; }
-done
+"$tree/scripts/prune-pyside6.sh" "$lib/vendor"
 find "$lib" -name __pycache__ -prune -exec rm -rf {} +
 for meta in "$lib"/vendor/*.dist-info; do
     [[ -d "$meta" ]] || { echo "missing wheel metadata in vendor/" >&2; exit 1; }

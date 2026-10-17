@@ -1,0 +1,104 @@
+# Flatpak manifest for LegendsOnLinux.
+#
+# Three things make this more than a plain Python app (the recipe follows
+# BedrockOnLinux's manifest):
+#   1. The window is PySide6, which no runtime ships, so it comes from the
+#      upstream wheels below (pinned by SHA-256) and is pruned to QtCore,
+#      QtGui, QtWidgets and the platform plugins by scripts/prune-pyside6.sh.
+#   2. xodus-cli, which downloads and decrypts the game, links WebKitGTK 4.1
+#      for the Microsoft Store sign-in window. The GNOME runtime ships it and
+#      org.freedesktop.Platform does not, hence org.gnome.Platform.
+#   3. The game runs through umu-launcher -> pressure-vessel, which builds its
+#      container as a Flatpak sub-sandbox through the
+#      org.freedesktop.portal.Flatpak portal: hence --allow=devel,
+#      --allow=multiarch and --allow=per-app-dev-shm (the Heroic/Bottles recipe).
+#
+# Build: scripts/build-flatpak.sh (builds this working tree).
+app-id: io.github.mdx0111.LegendsOnLinux
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+command: legends-on-linux
+finish-args:
+  # Microsoft sign-in, the game and engine downloads, Xbox Live
+  - --share=network
+  - --share=ipc
+  # The launcher window is native Wayland when it can be; the game itself
+  # uses Wine's X11 driver, so XWayland is needed on Wayland sessions.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=x11
+  - --socket=pulseaudio
+  # GPU (Vulkan) and game controllers
+  - --device=all
+  # Wine needs ptrace (devel) and 32-bit code (multiarch); without
+  # per-app-dev-shm the game's sub-sandbox gets a /dev/shm of its own.
+  - --allow=devel
+  - --allow=multiarch
+  - --allow=per-app-dev-shm
+  # The launcher's data: shared with the .deb/.rpm installs on purpose (see
+  # legends_on_linux/config.py), and game folders the user picks in $HOME.
+  # A game folder outside $HOME needs:
+  #   flatpak override --user --filesystem=/that/path io.github.mdx0111.LegendsOnLinux
+  - --filesystem=home
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/doc
+  - /share/man
+  - '*.a'
+  - '*.la'
+modules:
+  - name: python-dependencies
+    buildsystem: simple
+    build-commands:
+      - pip3 install --no-index --no-deps --no-build-isolation --no-compile
+        --find-links="file://${PWD}" --prefix="${FLATPAK_DEST}"
+        pycparser cffi cryptography shiboken6 pyside6-essentials
+      - bash ./prune-pyside6.sh "${FLATPAK_DEST}"/lib/python3*/site-packages
+      - rm -rf "${FLATPAK_DEST}"/bin/pyside6-* "${FLATPAK_DEST}"/bin/shiboken6*
+      - python3 -c "import cryptography, PySide6.QtWidgets; print('PySide6', PySide6.__version__)"
+    sources:
+      - type: file
+        path: ../scripts/prune-pyside6.sh
+      - type: file
+        url: https://files.pythonhosted.org/packages/90/11/0e6f11117525ff0eec40ebac3d313376f102df93ca44ad9e893ee85e4f89/pycparser-3.11-py3-none-any.whl
+        sha256: 51d5a8ba2be0bbe440b99d2112604c95bbbc3c2748a64260186c541e1729cd80
+      - type: file
+        url: https://files.pythonhosted.org/packages/e9/02/4e7d553a7ac4b4238b38b3c1b80d486e9d4436f8d2acbf87a0997fe3f402/cffi-2.1.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+        sha256: b0431303acaea1089ad4b3e9ce4e6518193def1118d4073ca848635ee4ea2e96
+      - type: file
+        url: https://files.pythonhosted.org/packages/d3/69/2c833a049475e0a3444e94c7d0aca0aa51d166374a449b09e92ac98138de/cryptography-50.0.2-cp311-abi3-manylinux_2_34_x86_64.whl
+        sha256: 9dab55f57c74c3cad24c323bacbbd04be4705ba6eb0d92e920b1fc4837ed5079
+      - type: file
+        url: https://files.pythonhosted.org/packages/a5/9a/f41bea4316d0c1bec4800842dcb4bd8fd3e29d6a79c496bc32e1aec42583/shiboken6-6.11.2-cp310-abi3-manylinux_2_34_x86_64.whl
+        sha256: 7a7a0a72a9ed26c9bf77d42246b1c736486befb8f31aa2fb29957ea4cdd1c1c2
+      - type: file
+        url: https://files.pythonhosted.org/packages/0e/1a/84a84bbc75835ee88abdcb66eb875b8e1a21834af9b833bc1893f2c1bfaf/pyside6_essentials-6.11.2-cp310-abi3-manylinux_2_34_x86_64.whl
+        sha256: aaf9f25f0f324874085fa5b26a610318db8a8e243cf85bb3e5400595191c7778
+
+  - name: legends-on-linux
+    buildsystem: simple
+    build-commands:
+      - install -d /app/lib/legends-on-linux/engine
+      - cp -a legends_on_linux data /app/lib/legends-on-linux/
+      - cp -a engine/patches /app/lib/legends-on-linux/engine/
+      - install -Dm755 legends-on-linux /app/lib/legends-on-linux/legends-on-linux
+      - install -Dm755 scripts/build-xgameruntime.sh /app/lib/legends-on-linux/scripts/build-xgameruntime.sh
+      - find /app/lib/legends-on-linux -name __pycache__ -prune -exec rm -rf '{}' +
+      - install -d /app/bin
+      - ln -s ../lib/legends-on-linux/legends-on-linux /app/bin/legends-on-linux
+      - install -Dm644 data/io.github.mdx0111.LegendsOnLinux.desktop /app/share/applications/io.github.mdx0111.LegendsOnLinux.desktop
+      - install -Dm644 data/io.github.mdx0111.LegendsOnLinux.metainfo.xml /app/share/metainfo/io.github.mdx0111.LegendsOnLinux.metainfo.xml
+      - for icon in data/icons/hicolor/*/apps/io.github.mdx0111.LegendsOnLinux.png; do
+          install -Dm644 "$icon" "/app/share/${icon#data/}"; done
+      - install -Dm644 LICENSE /app/share/licenses/io.github.mdx0111.LegendsOnLinux/LICENSE
+      - install -Dm644 THIRD_PARTY.md /app/share/licenses/io.github.mdx0111.LegendsOnLinux/THIRD_PARTY.md
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - .git
+          - .flatpak-build
+          - dist
+          - build
