@@ -97,6 +97,12 @@ def build(offline=False, debug=False):
     })
     # Wine's Schannel only stays on TLS 1.2 without this variable.
     environment.pop("GNUTLS_SYSTEM_PRIORITY_FILE", None)
+    if environment.get("WAYLAND_DISPLAY") and not environment.get("DISPLAY"):
+        # Wine then falls back to its Wayland driver, which sees the monitors
+        # in scaled coordinates and crops the game on HiDPI/multi-monitor setups.
+        warn("No X11 display (DISPLAY is unset): the game will use Wine's Wayland "
+             "driver, and its picture may be cut off. Make sure XWayland is running"
+             + (" and the Flatpak has the x11 socket." if C.FLATPAK else "."))
     if preauth_path:
         environment["WINEGDK_PREAUTH_DEVICE"] = preauth_path
     shared = _container_paths(directory)

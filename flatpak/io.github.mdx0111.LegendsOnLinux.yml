@@ -24,9 +24,11 @@ finish-args:
   - --share=network
   - --share=ipc
   # The launcher window is native Wayland when it can be; the game itself
-  # uses Wine's X11 driver, so XWayland is needed on Wayland sessions.
+  # must use Wine's X11 driver through XWayland. Not fallback-x11: that hides
+  # X11 whenever Wayland is there, Wine then picks its Wayland driver, sees
+  # the monitors in scaled logical coordinates and cuts off the game's
+  # picture on HiDPI and multi-monitor setups.
   - --socket=wayland
-  - --socket=fallback-x11
   - --socket=x11
   - --socket=pulseaudio
   # GPU (Vulkan) and game controllers
