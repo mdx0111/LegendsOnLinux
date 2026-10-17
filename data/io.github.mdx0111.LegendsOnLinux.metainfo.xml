@@ -33,6 +33,11 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.2" date="2026-10-17">
+      <description>
+        <p>Flatpak. The Debian package now shares the Flatpak's PySide6 pruning.</p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-10-17">
       <description>
         <p>Debian and Ubuntu package.</p>
