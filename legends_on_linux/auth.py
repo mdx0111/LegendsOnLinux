@@ -60,8 +60,15 @@ def _load_token():
     return token if token.get("refresh_token") else None
 
 
+def _write_account(path, data, mode=0o600):
+    """Write a file of the account folder, which only we may enter."""
+    C.ACCOUNT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    C.ACCOUNT.chmod(0o700)
+    write_private(path, data, mode)
+
+
 def _save_token(refresh_token):
-    write_private(TOKEN_FILE, json.dumps(
+    _write_account(TOKEN_FILE, json.dumps(
         {"refresh_token": refresh_token, "obtained": int(time.time())}).encode())
 
 
@@ -113,6 +120,14 @@ def login(on_code=None, cancel=None):
 def logout():
     for path in (TOKEN_FILE, C.PREAUTH):
         path.unlink(missing_ok=True)
+    # The game reads the token from the prefix's registry; remove that copy too.
+    if (C.PFX / "system.reg").is_file():
+        from .prefix import write_registry
+        try:
+            write_registry(None)
+        except LolError as exc:
+            warn(f"The game's copy of the sign-in stays in the Wine prefix until the "
+                 f"next start: {exc}")
     ok("Xbox Live account unlinked")
 
 
@@ -188,10 +203,10 @@ def _load_device_key():
     # Xbox Live expects one stable device identity across launches.
     key = ec.generate_private_key(ec.SECP256R1())
     device_id = "{" + str(uuid.uuid4()) + "}"
-    write_private(DEVICE_KEY, key.private_bytes(
+    _write_account(DEVICE_KEY, key.private_bytes(
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption()))
-    write_private(DEVICE_ID, device_id.encode(), 0o644)
+    _write_account(DEVICE_ID, device_id.encode(), 0o644)
     return key, device_id
 
 
@@ -349,7 +364,7 @@ def preauth(force=False):
     problems = _problems(out)
     if problems:
         raise LolError("Xbox Live sign-in is incomplete (" + ", ".join(problems) + ").")
-    write_private(C.PREAUTH, json.dumps(out).encode())
+    _write_account(C.PREAUTH, json.dumps(out).encode())
     got = ["device", "user", "profile"] + [n for n, a in (("PlayFab", playfab),
                                                          ("licensing", licensing)) if a.get("Token")]
     ok(f"Xbox Live: signed in as {out.get('xbl_gamertag') or out['xbl_xuid']} ({', '.join(got)})")

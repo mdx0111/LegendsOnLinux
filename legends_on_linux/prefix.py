@@ -183,6 +183,8 @@ def write_registry(refresh_token):
         "MICROSOFT_WINDOWSAPPRUNTIME_BOOTSTRAP_INITIALIZE_FAILFAST",
         "MICROSOFT_WINDOWSAPPRUNTIME_DEPLOYMENT_INITIALIZE_ONERRORSHOWUI")]
     update_prefix_registry(C.PFX, machine=machine, user=user)
+    # Wine writes system.reg world-readable; keep other users out of the prefix.
+    C.PFX.resolve().chmod(0o700)
 
 
 def saves_dir():

@@ -165,6 +165,68 @@ folder instead of downloading it again:
 2. **Xbox Live** (`login --xbox`): open the link shown and enter the code.
    This is the account the game itself plays as.
 
+## Security and privacy
+
+LegendsOnLinux needs your Microsoft account, so here is exactly what it does
+with it. The code is small and readable: the sign-ins are in
+[`legends_on_linux/auth.py`](legends_on_linux/auth.py) and
+[`legends_on_linux/store.py`](legends_on_linux/store.py).
+
+**Your password**
+
+- **Xbox Live** uses Microsoft's device-code sign-in, the same flow consoles and
+  TVs use. You type your password and code into microsoft.com/link in your own
+  browser; the launcher never sees the password, only the token Microsoft hands
+  back.
+- **Microsoft Store** sign-in is done by
+  [xodus-cli](https://github.com/xodus-gaming/xodus) (GPL-3.0), the same tool
+  BedrockOnLinux uses. It opens Microsoft's sign-in page in its own window.
+  The first time, your system may also ask for an administrator password:
+  xodus-cli reads the firmware's system information to register this PC as a
+  Store device. Cancelling that prompt is fine.
+
+**What is stored, and where**
+
+Everything stays on your computer, in folders only your user can open:
+
+| What | Where (under `~/.local/share/legends-on-linux/`) |
+|---|---|
+| Xbox Live refresh token, a device key, short-lived Xbox tokens | `account/` |
+| A copy of the Xbox Live refresh token, which the game reads | the Wine prefix's registry, `prefix/system.reg` |
+| Microsoft Store sign-in | xodus-cli's keyring in `xodus-home/` |
+
+Nothing is stored in the system keyring, in the cloud, or anywhere else.
+
+**What the launcher connects to**
+
+- **Microsoft and Xbox Live:** `login.live.com` and `*.xboxlive.com` to sign in,
+  and the Microsoft Store (through xodus-cli) to check ownership and download
+  the game.
+- **Downloads of its components:** GitHub releases (this project, BedrockOnLinux,
+  umu-launcher) and `curl.se` for CA certificates. Every download is checked
+  against a SHA-256 checksum pinned in
+  [`legends_on_linux/config.py`](legends_on_linux/config.py).
+
+The launcher has no analytics or telemetry and no server of its own. The game
+itself talks to Microsoft, Xbox Live and PlayFab, as it does on Windows.
+
+**Signing out and revoking access**
+
+- `legends-on-linux logout --xbox` deletes the Xbox Live tokens, including the
+  copy in the Wine prefix.
+- `legends-on-linux logout --store` signs xodus-cli out; add `--forget-device`
+  to also drop this PC's Store device registration.
+- To cut off access from Microsoft's side, remove the PC under
+  [account.microsoft.com/devices](https://account.microsoft.com/devices), or
+  revoke app access under
+  [account.live.com/consent/Manage](https://account.live.com/consent/Manage).
+
+**Debug logs**
+
+`play --debug` writes HTTP logs (`xcurl.log` in the game folder) that can
+contain sign-in tokens. Don't post them publicly as they are: remove the
+token values first, or ask in the issue for a private way to share them.
+
 ## Files
 
 Everything lives under `~/.local/share/legends-on-linux` (override with
@@ -202,7 +264,8 @@ a different hash from the release.
 ## Troubleshooting
 
 - `./legends-on-linux play --debug` writes `logs/steam-*.log` (WineGDK traces)
-  and `game/xcurl.log` (every HTTP request and its status).
+  and `game/xcurl.log` (every HTTP request and its status). The HTTP log can
+  contain sign-in tokens; see [Debug logs](#security-and-privacy) before sharing it.
 - "does not own Minecraft Legends": sign in with the account that bought the
   **Windows** edition (Store ID `9N98Z825TNFW`). A Steam copy cannot be
   downloaded this way.
