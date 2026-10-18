@@ -12,7 +12,7 @@ qt=$pyside/Qt
 [[ -d "$qt/lib" ]] || { echo "no PySide6 in $1" >&2; exit 1; }
 
 # QML/Quick, Designer and translations are most of the wheel.
-rm -rf "$pyside"/{Qt/qml,Qt/translations,designer,assistant,linguist,lupdate,lrelease,qmlformat,qmllint,qmlls,qmlimportscanner,qmltyperegistrar,uic,rcc,examples,include,glue,typesystems,scripts}
+rm -rf "$pyside"/{Qt/qml,Qt/translations,Qt/plugins/designer,designer,assistant,linguist,lupdate,lrelease,qmlformat,qmllint,qmlls,qmlimportscanner,qmltyperegistrar,uic,rcc,examples,include,glue,typesystems,scripts}
 for module in QtQml QtQuick QtQuickControls2 QtQuickWidgets QtDesigner QtUiTools QtTest QtSql \
               QtNetwork QtOpenGL QtOpenGLWidgets QtXml QtConcurrent QtDBus QtHelp QtPrintSupport \
               QtSvg QtSvgWidgets QtStateMachine; do
