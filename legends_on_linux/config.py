@@ -7,7 +7,7 @@ from pathlib import Path
 APP = "legends-on-linux"
 APP_ID = "io.github.mdx0111.LegendsOnLinux"
 PRETTY = "LegendsOnLinux"
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 
 # Desktop file, metainfo and icons. Checkouts and distribution packages both
 # keep data/ beside the legends_on_linux package.
