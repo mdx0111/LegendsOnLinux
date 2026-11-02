@@ -80,11 +80,11 @@ UMU_RUN_SHA256 = "577181dbff2eccdaa78b411c0fd1aa7fde574028449c3e0e99f508536a7687
 # --- Xodus: Store sign-in, licence, download and decryption ------------------
 # https://github.com/xodus-gaming/xodus (GPL-3.0), as built and published by
 # BedrockOnLinux (commit 64d39eb plus its licensing patches).
-XODUS_REV = "64d39eb87a56-p5"
+XODUS_REV = "64d39eb87a56-p7"
 XODUS_ASSET = f"xodus-cli-{XODUS_REV}.tar.gz"
 XODUS_URL = ("https://github.com/Wyze3306/BedrockOnLinux/releases/download/"
              f"xodus-{XODUS_REV}/{XODUS_ASSET}")
-XODUS_SHA256 = "bb507341bcd2eb56406e9aafab2a58978510b396df5d51a577bb0ba08560f8d8"
+XODUS_SHA256 = "7cedf6b45e5389a62b2ad84c2b9cb0cd218eab3e85962e516e364395c441f64f"
 
 # --- OpenSSL XCurl: PlayFab over OpenSSL instead of Wine's Schannel ----------
 XCURL_REV = "504bb166e4e7"

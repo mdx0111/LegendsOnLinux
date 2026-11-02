@@ -9,7 +9,7 @@ https://github.com/Wyze3306/BedrockOnLinux (commit f976cd5)
   `bol/auth.py` and `bol/xodus.py`.
 - At runtime the launcher downloads BedrockOnLinux's published builds: the
   WineGDK engine (`engine-wow64-archs-native20`), xodus-cli
-  (`xodus-64d39eb87a56-p5`) and the OpenSSL XCurl set (`xcurl-504bb166e4e7`).
+  (`xodus-64d39eb87a56-p7`) and the OpenSSL XCurl set (`xcurl-504bb166e4e7`).
   Each is pinned by SHA-256.
 
     Copyright (c) 2026 BedrockOnLinux contributors
