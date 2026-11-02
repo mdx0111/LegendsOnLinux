@@ -33,6 +33,11 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.5" date="2026-11-02">
+      <description>
+        <p>Fixes game downloads that failed during the Xbox sign-in with HTTP 400, after Microsoft changed its sign-in tickets. xodus-cli is updated to a build that handles them.</p>
+      </description>
+    </release>
     <release version="0.1.4" date="2026-10-18">
       <description>
         <p>Privacy fixes: the sign-in folders are now private to your user, and signing out of Xbox Live also removes the game's copy of the token. The README documents what each sign-in does and where its data is kept.</p>
